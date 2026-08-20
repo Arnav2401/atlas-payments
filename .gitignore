@@ -1,0 +1,29 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Build (Phase 01 onward)
+build/
+target/
+out/
+.gradle/
+
+# Python (Phase 05 onward)
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Secrets — never commit these
+.env
+*.pem
+*.key
+secrets/
+
+# Large reference data — document the source, don't commit the file
+data/
+docs/samples/*.csv
