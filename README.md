@@ -7,7 +7,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M1 — payment API and validation. R01 and R03 implemented; 8 rules and the validator outstanding.
+**Status:** M1 — payment API and validation. All ten rules implemented (98 tests passing); the validator, controller and reason-code scheme outstanding.
 
 ## A note on ISO 20022
 
@@ -90,15 +90,15 @@ rejection reason code.
 | ID | Rule | Phase | Reason code | Condition |
 |---|---|---|---|---|
 | R01 | Amount strictly positive | structural | *TBD* | present, `signum() > 0` |
-| R02 | Decimal places match currency minor unit | semantic | *TBD* | *TBD* |
+| R02 | Decimal places match currency minor unit | semantic | *TBD* | `scale() <= minor unit`, no stripping |
 | R03 | Currency is a supported settlement currency | structural | *TBD* | member of an explicit allow-list, not the JDK currency set |
-| R04 | `endToEndId` present, non-empty, bounded | structural | *TBD* | *TBD* |
-| R05 | Agent BICs match ISO 9362 (8 or 11 alphanumeric) | structural | *TBD* | *TBD* |
-| R06 | Debtor and creditor accounts present and distinct | structural | *TBD* | *TBD* |
-| R07 | `chargeBearer` in supported set | structural | *TBD* | *TBD* |
-| R08 | Settlement date within window | semantic | *TBD* | *TBD* |
-| R09 | Debtor country a valid ISO 3166-1 alpha-2 code | structural | *TBD* | *TBD* |
-| R10 | Field lengths bounded | structural | *TBD* | *TBD* |
+| R04 | `endToEndId` present, non-blank, bounded, log-safe | structural | *TBD* | max 35, ISO 20022 basic Latin set |
+| R05 | Agent BICs match ISO 9362 | structural | *TBD* | 4 alpha + 2 alpha + 2 alnum + optional 3 alnum |
+| R06 | Debtor and creditor accounts present and distinct | structural | *TBD* | distinct after strip + uppercase |
+| R07 | `chargeBearer` in supported set | structural | *TBD* | DEBT, CRED, SHAR, SLEV |
+| R08 | Settlement date within window | semantic | *TBD* | today .. today+30 UTC, both inclusive |
+| R09 | Debtor country a valid ISO 3166-1 alpha-2 code | structural | *TBD* | `Locale.getISOCountries()`, uppercase |
+| R10 | Bounds the fields no other rule bounds | structural | *TBD* | accounts ≤ 34; 512-char backstop |
 
 Structural rules run first and all failures are collected. Semantic rules run
 only if every structural rule passed, because they assume structural validity —
@@ -106,6 +106,10 @@ R02 cannot judge decimal places against a currency that R03 has already rejected
 
 A request can also fail before any rule runs, if the body is not readable as
 JSON. That path is separate and reports differently. *(TBD: document it here.)*
+
+**R10 does not bound request size.** By the time it runs, the body has already
+been parsed into memory. Request-size limiting belongs at the container, and is
+not yet configured.
 
 ## Metrics
 

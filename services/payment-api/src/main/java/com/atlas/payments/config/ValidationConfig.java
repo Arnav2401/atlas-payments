@@ -15,6 +15,7 @@ import com.atlas.payments.validation.rules.SettlementDateWindowRule;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
+import java.time.Clock;
 import java.util.List;
 
 /**
@@ -31,8 +32,18 @@ import java.util.List;
 @Configuration
 public class ValidationConfig {
 
+    /**
+     * UTC, explicitly. R08 asks whether a settlement date is in the past, which is
+     * a timezone-dependent question — inheriting the server's default zone would
+     * make the answer depend on where the container happens to run.
+     */
     @Bean
-    public PaymentValidator paymentValidator() {
+    public Clock clock() {
+        return Clock.systemUTC();
+    }
+
+    @Bean
+    public PaymentValidator paymentValidator(Clock clock) {
         List<ValidationRule> rules = List.of(
                 new AmountPositiveRule(),
                 new AmountScaleRule(),
@@ -41,7 +52,7 @@ public class ValidationConfig {
                 new AgentBicFormatRule(),
                 new AccountsRule(),
                 new ChargeBearerRule(),
-                new SettlementDateWindowRule(),
+                new SettlementDateWindowRule(clock, SettlementDateWindowRule.DEFAULT_MAX_DAYS_FORWARD),
                 new DebtorCountryRule(),
                 new FieldLengthBoundsRule());
 

@@ -1,30 +1,57 @@
 package com.atlas.payments.validation.rules;
 
+import com.atlas.payments.testing.PaymentInstructionRequests;
+import com.atlas.payments.validation.RuleId;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * R06_ACCOUNTS_PRESENT_AND_DISTINCT.
- *
- * <p>Brief requires a valid case, an invalid case and an edge case per rule.
- * These fail rather than being @Disabled on purpose: a disabled test is a green
- * build that proves nothing, and M1 is not done until all thirty pass.
- */
+/** R06 — accounts present and distinct. */
 class AccountsRuleTest {
 
+    private static final String ACCOUNT = "DE89370400440532013000";
+
+    private final AccountsRule rule = new AccountsRule();
+
     @Test
-    void accepts_a_conforming_request() {
-        fail("TODO(M1): two distinct accounts pass");
+    void accepts_two_distinct_accounts() {
+        assertTrue(rule.check(PaymentInstructionRequests.valid().build()).isEmpty());
     }
 
     @Test
-    void rejects_a_violating_request() {
-        fail("TODO(M1): identical debtor and creditor accounts are rejected");
+    void rejects_a_payment_from_an_account_to_itself() {
+        var request = PaymentInstructionRequests.valid()
+                .debtorAccount(ACCOUNT).creditorAccount(ACCOUNT).build();
+
+        var reason = rule.check(request).orElseThrow();
+
+        assertEquals(RuleId.R06_ACCOUNTS_PRESENT_AND_DISTINCT, reason.ruleId());
+    }
+
+    /**
+     * Edge, and the substance of the rule: a self-payment must not slip through
+     * on a case or whitespace difference. Comparison normalises; the stored value
+     * is not rewritten.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"de89370400440532013000", "  DE89370400440532013000  ", "De89370400440532013000"})
+    void edge_self_payment_is_caught_despite_case_or_whitespace(String disguised) {
+        var request = PaymentInstructionRequests.valid()
+                .debtorAccount(ACCOUNT).creditorAccount(disguised).build();
+
+        assertTrue(rule.check(request).isPresent(), "should be caught: " + disguised);
     }
 
     @Test
-    void edge_case() {
-        fail("TODO(M1): same account differing only in case or surrounding whitespace");
+    void rejects_absent_accounts_and_names_the_field() {
+        assertEquals("debtorAccount",
+                rule.check(PaymentInstructionRequests.valid().debtorAccount(null).build())
+                        .orElseThrow().field());
+        assertEquals("creditorAccount",
+                rule.check(PaymentInstructionRequests.valid().creditorAccount("   ").build())
+                        .orElseThrow().field());
     }
 }

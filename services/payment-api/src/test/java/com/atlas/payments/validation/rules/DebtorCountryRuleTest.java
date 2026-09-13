@@ -1,30 +1,57 @@
 package com.atlas.payments.validation.rules;
 
+import com.atlas.payments.testing.PaymentInstructionRequests;
+import com.atlas.payments.validation.RuleId;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * R09_DEBTOR_COUNTRY.
- *
- * <p>Brief requires a valid case, an invalid case and an edge case per rule.
- * These fail rather than being @Disabled on purpose: a disabled test is a green
- * build that proves nothing, and M1 is not done until all thirty pass.
- */
+/** R09 — debtor country must be ISO 3166-1 alpha-2. */
 class DebtorCountryRuleTest {
 
-    @Test
-    void accepts_a_conforming_request() {
-        fail("TODO(M1): IN passes");
+    private final DebtorCountryRule rule = new DebtorCountryRule();
+
+    @ParameterizedTest
+    @ValueSource(strings = {"IN", "DE", "GB", "US", "SG"})
+    void accepts_valid_alpha_2_codes(String country) {
+        var request = PaymentInstructionRequests.valid().debtorCountry(country).build();
+
+        assertTrue(rule.check(request).isEmpty(), country + " should be accepted");
     }
 
     @Test
-    void rejects_a_violating_request() {
-        fail("TODO(M1): ZZ is rejected");
+    void rejects_a_code_that_is_not_a_country() {
+        var request = PaymentInstructionRequests.valid().debtorCountry("ZZ").build();
+
+        assertEquals(RuleId.R09_DEBTOR_COUNTRY, rule.check(request).orElseThrow().ruleId());
+    }
+
+    /**
+     * Edge: UK is the common abbreviation for the United Kingdom and is not an
+     * ISO 3166-1 alpha-2 code. GB is. This is the mistake a caller actually makes.
+     */
+    @Test
+    void edge_uk_is_rejected_and_gb_is_accepted() {
+        assertTrue(rule.check(PaymentInstructionRequests.valid().debtorCountry("UK").build()).isPresent(),
+                "UK is not an ISO 3166-1 alpha-2 code");
+        assertTrue(rule.check(PaymentInstructionRequests.valid().debtorCountry("GB").build()).isEmpty());
+    }
+
+    /** Edge: same normalisation answer as R03 and R07. */
+    @ParameterizedTest
+    @ValueSource(strings = {"in", "De", "gB"})
+    void edge_case_variants_are_rejected_not_normalised(String country) {
+        var request = PaymentInstructionRequests.valid().debtorCountry(country).build();
+
+        assertTrue(rule.check(request).isPresent(), country + " should be rejected");
     }
 
     @Test
-    void edge_case() {
-        fail("TODO(M1): GB versus UK - one is ISO 3166-1 alpha-2 and one is not");
+    void rejects_absent_or_blank() {
+        assertTrue(rule.check(PaymentInstructionRequests.valid().debtorCountry(null).build()).isPresent());
+        assertTrue(rule.check(PaymentInstructionRequests.valid().debtorCountry(" ").build()).isPresent());
     }
 }
