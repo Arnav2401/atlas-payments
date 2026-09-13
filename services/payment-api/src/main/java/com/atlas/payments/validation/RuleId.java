@@ -48,16 +48,29 @@ public enum RuleId {
     /**
      * The published reason code for this rule.
      *
-     * <p>TODO(M1): you define this scheme — the brief is explicit that it is
-     * yours, and the README must document all ten. Two shapes worth weighing:
-     * opaque and stable ({@code ATLAS-V007}), which survives any rename or
-     * re-scoping of the rule; or mnemonic ({@code AMOUNT_NOT_POSITIVE}), which
-     * is self-describing in a client log but tempts you to change it when the
-     * rule's meaning drifts. Pick one, then answer: does the code stay fixed if
-     * the rule's logic changes?
+     * <h2>Scheme</h2>
+     *
+     * <p>{@code ATLAS-Vnnn} — opaque and stable. Chosen over a mnemonic such as
+     * {@code AMOUNT_NOT_POSITIVE} for one reason: a mnemonic describes the rule's
+     * current meaning, so when the meaning drifts there is pressure to rename the
+     * code, and the code is a published contract that clients branch on. An
+     * opaque code cannot be "wrong" when a rule is re-scoped, so it never has to
+     * change. The human-readable half lives in {@code message}, which is free to
+     * change because nobody should be parsing it.
+     *
+     * <p>This is the same trade ISO 20022 makes with its external reason codes
+     * ({@code AM02}, {@code RR02}) — opaque tokens plus a published table. The
+     * {@code ATLAS-} prefix is deliberate: these are ours, and must not be
+     * mistaken for ISO codes.
+     *
+     * <p><b>The rule:</b> a code, once published, never changes meaning. If a
+     * rule is split, the old code stays with whichever half keeps the original
+     * semantics and the new half gets a new number. Numbers are never reused.
+     *
+     * <p>{@code ATLAS-E***} is reserved for failures that occur before any rule
+     * runs — see {@code ApiExceptionHandler}.
      */
     public String code() {
-        throw new UnsupportedOperationException(
-                "TODO(M1): define the reason-code scheme for " + name());
+        return "ATLAS-V%03d".formatted(ordinal() + 1);
     }
 }

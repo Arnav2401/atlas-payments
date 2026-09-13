@@ -1,17 +1,17 @@
 package com.atlas.payments.api.dto;
 
+import com.atlas.payments.validation.RejectionReason;
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.util.List;
 
 /**
  * Wire response for {@code POST /payments}.
  *
- * <p>Shaped for the 200-with-status reading of DECISION 1 (see
- * {@link com.atlas.payments.api.PaymentController}): it carries an explicit
- * status discriminator so a rejection can be reported on a successful HTTP
- * exchange. If you settle on 4xx-for-rejection instead, this record loses
- * {@code status} and the rejection path moves into the exception handler.
- * Decide before you write the factories.
+ * <p>Carries an explicit status discriminator because both outcomes are returned
+ * on 200 — see DECISION 1 in {@link com.atlas.payments.api.PaymentController}.
  */
+@JsonInclude(JsonInclude.Include.NON_NULL)
 public record PaymentSubmissionResponse(
         String endToEndId,
         Status status,
@@ -22,12 +22,37 @@ public record PaymentSubmissionResponse(
     public enum Status { ACCEPTED, REJECTED }
 
     /**
-     * One failed rule, as the caller sees it. {@code code} is the published
+     * One failed rule as the caller sees it. {@code code} is the published
      * contract; the internal {@link com.atlas.payments.validation.RuleId} is not
      * exposed, so renaming a rule cannot break a client.
      */
     public record RejectionDetail(String code, String field, String message) {}
 
-    // TODO(M1): static factories - accepted(...) and rejected(...) - once
-    // DECISION 1 is settled.
+    public static PaymentSubmissionResponse accepted(String endToEndId, String paymentId) {
+        return new PaymentSubmissionResponse(endToEndId, Status.ACCEPTED, paymentId, null);
+    }
+
+    /**
+     * @param endToEndId echoed so the caller can correlate. It is echoed
+     *        <em>truncated</em>, because on the rejection path it is by
+     *        definition unvalidated — R04 may be the very rule that failed — and
+     *        a response must not be an amplifier for whatever the caller sent.
+     *        Jackson escapes control characters, so the remaining risk is size,
+     *        and this bounds it.
+     */
+    public static PaymentSubmissionResponse rejected(String endToEndId, List<RejectionReason> reasons) {
+        List<RejectionDetail> details = reasons.stream()
+                .map(reason -> new RejectionDetail(
+                        reason.ruleId().code(), reason.field(), reason.message()))
+                .toList();
+
+        return new PaymentSubmissionResponse(truncate(endToEndId), Status.REJECTED, null, details);
+    }
+
+    private static String truncate(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.length() <= 64 ? value : value.substring(0, 64);
+    }
 }

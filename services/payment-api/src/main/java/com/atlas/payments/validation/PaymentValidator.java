@@ -2,6 +2,8 @@ package com.atlas.payments.validation;
 
 import com.atlas.payments.api.dto.PaymentInstructionRequest;
 
+import com.atlas.payments.domain.PaymentInstruction;
+
 import java.util.List;
 
 /**
@@ -41,8 +43,45 @@ public final class PaymentValidator {
      * order, so responses are deterministic and testable.
      */
     public ValidationOutcome validate(PaymentInstructionRequest request) {
-        throw new UnsupportedOperationException(
-                "TODO(M1): implement the two-phase run described in the javadoc above");
+        List<RejectionReason> structural = run(request, ValidationRule.Phase.STRUCTURAL);
+        if (!structural.isEmpty()) {
+            return new ValidationOutcome.Rejected(structural);
+        }
+
+        List<RejectionReason> semantic = run(request, ValidationRule.Phase.SEMANTIC);
+        if (!semantic.isEmpty()) {
+            return new ValidationOutcome.Rejected(semantic);
+        }
+
+        return new ValidationOutcome.Accepted(narrow(request));
+    }
+
+    /**
+     * Runs every rule in one phase and collects all failures. Streaming over the
+     * registration list is what makes rejection order deterministic — an
+     * unordered collection here would make response assertions flaky.
+     */
+    private List<RejectionReason> run(PaymentInstructionRequest request, ValidationRule.Phase phase) {
+        return rules.stream()
+                .filter(rule -> rule.phase() == phase)
+                .map(rule -> rule.check(request))
+                .flatMap(java.util.Optional::stream)
+                .toList();
+    }
+
+    /** Safe only because every rule passed. See PaymentInstruction#of. */
+    private static PaymentInstruction narrow(PaymentInstructionRequest request) {
+        return PaymentInstruction.of(
+                request.endToEndId(),
+                request.instructedAmount(),
+                request.instructedCurrency(),
+                request.debtorAgent(),
+                request.creditorAgent(),
+                request.debtorAccount(),
+                request.creditorAccount(),
+                request.debtorCountry(),
+                request.chargeBearer(),
+                request.settlementDate());
     }
 
     /** Exposed so the README rule table can be generated from the code, not hand-maintained. */

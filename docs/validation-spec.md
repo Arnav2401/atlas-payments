@@ -25,8 +25,53 @@ anyway emits a second, misleading rejection.
 
 ## Rejection response
 
-*TODO: document the envelope once DECISION 1 (200-with-status vs 4xx) is settled,
-and the reason-code scheme once chosen. Both are referenced from the README.*
+A rejected payment returns **HTTP 200** with `status: "REJECTED"` and one entry
+per failed rule. The dividing line is *did the service produce a decision?* — a
+payment evaluated against ten rules was decisioned, and the decision is the
+payload. A body that could not be read produced no decision, so it is a 400 in a
+different shape (see **Pre-rule failures**).
+
+```json
+{
+  "endToEndId": "E2E-002",
+  "status": "REJECTED",
+  "rejections": [
+    { "code": "ATLAS-V001", "field": "instructedAmount",
+      "message": "instructedAmount must be strictly greater than zero" },
+    { "code": "ATLAS-V003", "field": "instructedCurrency",
+      "message": "instructedCurrency is not a supported settlement currency" }
+  ]
+}
+```
+
+## Reason-code scheme
+
+`ATLAS-Vnnn` — opaque and stable. Chosen over a mnemonic such as
+`AMOUNT_NOT_POSITIVE` because a mnemonic describes a rule's *current* meaning,
+so when the meaning drifts there is pressure to rename the code — and the code
+is a published contract that clients branch on. An opaque code cannot be wrong
+when a rule is re-scoped, so it never has to change. The human-readable half
+lives in `message`, which is free to change because nobody should parse it.
+This is the same trade ISO 20022 makes with `AM02`/`RR02`; the `ATLAS-` prefix
+exists so ours are never mistaken for ISO codes.
+
+**The rule:** a published code never changes meaning. If a rule is split, the
+old code stays with whichever half keeps the original semantics and the new half
+gets a new number. Numbers are never reused.
+
+`ATLAS-E***` is reserved for failures before any rule runs.
+
+## Pre-rule failures
+
+| Code | HTTP | Cause |
+|---|---|---|
+| `ATLAS-E001` | 400 | Body not readable as a payment instruction — invalid JSON, unparseable date, or an unknown field |
+| `ATLAS-E002` | 400 | Required `Idempotency-Key` header absent |
+| `ATLAS-E500` | 500 | Narrowing failed after every rule passed — a bug in the rule set, not bad input |
+
+Jackson's own message is discarded rather than returned: it names internal
+classes and echoes the offending value, which on this endpoint could be part of
+an account identifier.
 
 ---
 
@@ -35,7 +80,7 @@ and the reason-code scheme once chosen. Both are referenced from the README.*
 - **Field:** `instructedAmount`
 - **Phase:** structural
 - **Condition:** present, and `signum() > 0`.
-- **Reason code:** *TODO — blocked on the code scheme*
+- **Reason code:** `ATLAS-V001`
 - **Rationale:** a non-positive amount is not a payment. An **absent** amount
   fails R01 rather than R10, because "strictly positive" is unsatisfiable by
   null and deferring it would let R02 run against a null amount and emit a
@@ -58,7 +103,7 @@ and the reason-code scheme once chosen. Both are referenced from the README.*
 - **Field:** `instructedAmount`, `instructedCurrency`
 - **Phase:** semantic — depends on R03
 - **Condition:** `scale() <= currency.getDefaultFractionDigits()`.
-- **Reason code:** *TODO — blocked on the code scheme*
+- **Reason code:** `ATLAS-V002`
 - **`<=` not `==`:** "100" is a valid USD amount; demanding exactly two decimal
   places would reject it. This also handles negative scale — `1E+2` has scale
   -2 and is a whole number.
@@ -84,7 +129,7 @@ and the reason-code scheme once chosen. Both are referenced from the README.*
 - **Condition:** present, non-blank, and a member of an explicit allow-list of
   the currencies this service settles. Currently AED, AUD, BHD, CAD, CHF, EUR,
   GBP, HKD, INR, JPY, KWD, SGD, USD.
-- **Reason code:** *TODO — blocked on the code scheme*
+- **Reason code:** `ATLAS-V003`
 - **Source of truth:** an explicit allow-list — **not** `java.util.Currency`.
 
   The obvious implementation is `Currency.getAvailableCurrencies()`. It is wrong
@@ -134,7 +179,8 @@ and the reason-code scheme once chosen. Both are referenced from the README.*
   removes the problem rather than relying on every future log call to escape it.
 - **Test cases:** valid `INV-2026-0091/AX`; invalid blank/absent; edge exactly 35
   accepted and 36 rejected; edge `
-`, ``, `NUL` and `<script>` rejected.
+`, `
+`, `NUL` and `<script>` rejected.
 
 **Status:** implemented, 12 tests passing.
 
