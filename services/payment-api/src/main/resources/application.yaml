@@ -1,0 +1,17 @@
+spring:
+  application:
+    name: payment-api
+  jackson:
+    # Reject unknown fields rather than silently dropping them. A caller who
+    # misspells `instructedAmount` should be told, not have the payment accepted
+    # with a null amount that R01 then blames them for.
+    deserialization:
+      fail-on-unknown-properties: true
+
+server:
+  port: 8080
+
+# TODO(M1): the settlement window N for R08 belongs here once you have chosen it,
+# along with the field-length bounds for R10. Putting them in config rather than
+# in the rule classes is what lets you answer "how would you version these rules?"
+# with something other than "recompile".
