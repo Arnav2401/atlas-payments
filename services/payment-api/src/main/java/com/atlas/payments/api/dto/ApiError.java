@@ -17,4 +17,10 @@ public record ApiError(String code, String message) {
 
     /** A required header was absent. */
     public static final String MISSING_HEADER = "ATLAS-E002";
+
+    /** The idempotency key has already been used for a different payment. */
+    public static final String IDEMPOTENCY_CONFLICT = "ATLAS-E003";
+
+    /** The payment cannot be posted as instructed. */
+    public static final String LEDGER_CONFLICT = "ATLAS-E004";
 }

@@ -1,12 +1,36 @@
 spring:
   application:
     name: payment-api
+
   jackson:
     # Reject unknown fields rather than silently dropping them. A caller who
     # misspells `instructedAmount` should be told, not have the payment accepted
     # with a null amount that R01 then blames them for.
     deserialization:
       fail-on-unknown-properties: true
+
+  datasource:
+    url: ${ATLAS_DB_URL:jdbc:postgresql://localhost:5432/atlas}
+    username: ${ATLAS_DB_USER:atlas}
+    # Local default only. M5 removes the fallback and requires the variable.
+    password: ${ATLAS_DB_PASSWORD:atlas}
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema; Hibernate must never touch it. Anything other
+      # than "validate" means the production schema is whatever Hibernate
+      # inferred from the entities - not reviewable, not versioned, not
+      # rollback-able. "validate" turns a drift between entities and migrations
+      # into a startup failure instead of a silent divergence.
+      ddl-auto: validate
+    # Without this, the persistence context stays open for the whole request and
+    # lazy loads fire from the view layer - which hides exactly the
+    # LazyInitializationException that tells you a fetch is missing.
+    open-in-view: false
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
 
 server:
   port: 8080

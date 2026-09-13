@@ -9,7 +9,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M1 complete — payment API, ten validation rules, 113 tests passing.
+**Status:** M2 in progress — double-entry ledger on PostgreSQL. 124 tests passing.
 
 ## A note on ISO 20022
 
@@ -70,6 +70,94 @@ claims specification compliance.
 
 Observability: Prometheus + Grafana across all services
 ```
+
+## Run
+
+```bash
+docker compose up -d        # PostgreSQL 18
+./gradlew :services:payment-api:bootRun
+```
+
+Flyway applies the schema at startup. `ddl-auto` is `validate`, so a drift
+between the JPA entities and the migrations fails at boot rather than silently
+diverging — it has already caught one real mismatch (`CHAR(3)` vs `VARCHAR(3)`).
+
+## The ledger
+
+Three tables — `accounts`, `journal_entries`, `postings` — and **no balance
+column anywhere**. A balance is `SUM(postings.amount_minor)` for an account.
+Storing a running balance is simpler and faster and is exactly what makes a
+ledger wrong under concurrency, because it turns every payment into a
+read-modify-write on a contended row.
+
+Money is a signed integer count of the currency's minor unit. Positive is a
+debit, negative a credit, so "this entry balances" is the single expression
+`SUM(amount_minor) = 0`. Minor units come from the currency, so JPY 100 stores
+as `100` and BHD 1.234 as `1234` — the case a hard-coded `× 100` gets wrong.
+
+**Two invariants are enforced by the database, not the application:**
+
+| Invariant | Mechanism |
+|---|---|
+| Exactly one ledger effect per idempotency key | `UNIQUE (idempotency_key)` |
+| Every journal entry balances | `DEFERRABLE INITIALLY DEFERRED` constraint trigger |
+
+The trigger must be deferred because the invariant spans rows: after the first
+posting the entry is legitimately unbalanced, and only at `COMMIT` is that an
+error. A non-deferred check would reject the first leg of every valid entry.
+
+### Idempotency under concurrency
+
+The insert is not guarded, it is *attempted*. Check-then-insert is a
+time-of-check-to-time-of-use bug — under READ COMMITTED neither transaction can
+see the other's uncommitted row, so both find the key free and both insert. The
+unique constraint picks the winner; the loser's transaction is aborted, so it
+starts a fresh one and reads back the winner's entry. Both callers get the same
+`paymentId`.
+
+A test calls the writer directly, with the pre-check bypassed, and asserts that
+exactly one of eight simultaneous inserts survives and seven are refused by the
+database — because the version that goes through the pre-check can pass for the
+wrong reason if the first thread happens to commit first.
+
+### Isolation level: READ COMMITTED, deliberately
+
+Higher isolation protects read-modify-write cycles. This ledger has none:
+postings are append-only and balances are derived, so no value read during a
+write could be stale in a way that produces a wrong result. The one invariant
+that needs protecting is held by a unique constraint, which is enforced
+regardless of isolation level and across processes.
+
+**This answer has a documented expiry.** Add an available-funds check and the
+read-modify-write appears immediately — two concurrent payments each read a
+sufficient balance and both commit, overdrawing the account. That is a lost
+update and it is reachable under READ COMMITTED. The fix would be SERIALIZABLE
+with retry, or `SELECT FOR UPDATE` on the account row, and only then does the
+`version` column on `accounts` start doing real work.
+
+### Reconciliation
+
+`GET /ledger/reconciliation` returns 200 when the ledger balances and **500 when
+it does not** — an unbalanced ledger means money was created or destroyed, and
+should read as broken to every monitor watching it.
+
+It checks two things, which are not the same question: the global
+`sum(debits) = sum(credits)`, and whether any individual entry fails to balance.
+A global sum can be zero while two entries are wrong in equal and opposite
+directions, which is how a broken ledger looks healthy from a distance.
+
+Verified green over 10,000 synthetic payments (13.5s, ~735/s single-threaded —
+an early number, not a benchmark; M5 measures properly under k6).
+
+### Known gaps, deliberate
+
+- **Accounts are auto-created on first reference.** A bank does not open an
+  account because a stranger sent money to it. The production shape is a rule
+  that rejects an unknown creditor account plus an onboarding path.
+- **No available-funds check**, so no overdraft protection — see the isolation
+  note above for what that would change.
+- **No business-date calendar** — R08 is a window check, not a settlement
+  calendar.
 
 ## Build
 

@@ -1,6 +1,8 @@
 package com.atlas.payments.api;
 
 import com.atlas.payments.api.dto.ApiError;
+import com.atlas.payments.ledger.IdempotencyConflictException;
+import com.atlas.payments.ledger.LedgerConflictException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -40,6 +42,28 @@ public class ApiExceptionHandler {
         return ResponseEntity.badRequest().body(new ApiError(
                 ApiError.MISSING_HEADER,
                 "Missing required header: " + exception.getHeaderName()));
+    }
+
+    /**
+     * An idempotency key reused for a different payment: 409, not 400 and not a
+     * rejection. The request is well-formed and the payment is valid — the
+     * conflict is with state the caller created earlier, which is exactly what
+     * 409 means.
+     */
+    @ExceptionHandler(IdempotencyConflictException.class)
+    public ResponseEntity<ApiError> handleIdempotencyConflict(IdempotencyConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
+                ApiError.IDEMPOTENCY_CONFLICT, exception.getMessage()));
+    }
+
+    /**
+     * The brief's requirement that a ledger conflict is handled explicitly
+     * rather than surfacing as a 500.
+     */
+    @ExceptionHandler(LedgerConflictException.class)
+    public ResponseEntity<ApiError> handleLedgerConflict(LedgerConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
+                ApiError.LEDGER_CONFLICT, exception.getMessage()));
     }
 
     /**
