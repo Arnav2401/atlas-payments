@@ -7,7 +7,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M1 — payment API and validation. Scaffolded, not yet implemented.
+**Status:** M1 — payment API and validation. R01 and R03 implemented; 8 rules and the validator outstanding.
 
 ## A note on ISO 20022
 
@@ -89,9 +89,9 @@ rejection reason code.
 
 | ID | Rule | Phase | Reason code | Condition |
 |---|---|---|---|---|
-| R01 | Amount strictly positive | structural | *TBD* | *TBD* |
+| R01 | Amount strictly positive | structural | *TBD* | present, `signum() > 0` |
 | R02 | Decimal places match currency minor unit | semantic | *TBD* | *TBD* |
-| R03 | Currency is a live ISO 4217 code | structural | *TBD* | *TBD* |
+| R03 | Currency is a supported settlement currency | structural | *TBD* | member of an explicit allow-list, not the JDK currency set |
 | R04 | `endToEndId` present, non-empty, bounded | structural | *TBD* | *TBD* |
 | R05 | Agent BICs match ISO 9362 (8 or 11 alphanumeric) | structural | *TBD* | *TBD* |
 | R06 | Debtor and creditor accounts present and distinct | structural | *TBD* | *TBD* |

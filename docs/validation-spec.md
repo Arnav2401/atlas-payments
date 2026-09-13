@@ -34,13 +34,22 @@ and the reason-code scheme once chosen. Both are referenced from the README.*
 
 - **Field:** `instructedAmount`
 - **Phase:** structural
-- **Condition:** *TODO*
-- **Reason code:** *TODO*
-- **Rationale:** *TODO*
+- **Condition:** present, and `signum() > 0`.
+- **Reason code:** *TODO — blocked on the code scheme*
+- **Rationale:** a non-positive amount is not a payment. An **absent** amount
+  fails R01 rather than R10, because "strictly positive" is unsatisfiable by
+  null and deferring it would let R02 run against a null amount and emit a
+  second, misleading rejection.
+- **Implementation note:** `signum()`, not `compareTo(ZERO)` and never
+  `equals(ZERO)` — `0.00` is not `equals` to `0` in `BigDecimal` (same value,
+  different scale), so `equals` would have been the bug.
 - **Test cases:**
-  - valid — *TODO*
-  - invalid — *TODO*
-  - edge — exactly zero
+  - valid — `100.00`
+  - invalid — `-0.01`
+  - edge — `0`, `0.00`, `-0.00`, `0.0000` all rejected identically
+  - edge — absent amount rejected, by this rule
+
+**Status:** implemented, 7 tests passing.
 
 ---
 
@@ -58,20 +67,45 @@ and the reason-code scheme once chosen. Both are referenced from the README.*
 
 ---
 
-## R03 — Currency is a live ISO 4217 code
+## R03 — Currency is a supported settlement currency
 
 - **Field:** `instructedCurrency`
 - **Phase:** structural
-- **Condition:** *TODO*
-- **Reason code:** *TODO*
-- **Rationale:** *TODO*
-- **Source of truth:** *TODO — `java.util.Currency` bundled data, or a curated
-  allow-list? Note the JDK list includes historical codes and tracks the JDK
-  version rather than a live feed.*
+- **Condition:** present, non-blank, and a member of an explicit allow-list of
+  the currencies this service settles. Currently AED, AUD, BHD, CAD, CHF, EUR,
+  GBP, HKD, INR, JPY, KWD, SGD, USD.
+- **Reason code:** *TODO — blocked on the code scheme*
+- **Source of truth:** an explicit allow-list — **not** `java.util.Currency`.
+
+  The obvious implementation is `Currency.getAvailableCurrencies()`. It is wrong
+  for this rule. That set has 233 entries on JDK 21 and includes `DEM`, `FRF`
+  and `ZWD` — currencies withdrawn years ago — plus the ISO 4217 pseudo-codes
+  `XXX` ("no currency") and `XAU` (gold), which report a minor unit of `-1` and
+  would break R02 downstream. `java.util.Currency` is bundled data describing
+  every code ISO has ever assigned, tracking the JDK version rather than any
+  live feed, so it cannot express "live".
+
+  A payment service settles the corridors it has arrangements for, which is
+  always a small subset of ISO 4217. "Supported" is the honest predicate and it
+  implies "live". A test asserts every entry in the allow-list is a real ISO
+  code, so a typo fails the build instead of silently rejecting good payments.
+- **Case handling:** rejected, not normalised. ISO 4217 codes are uppercase by
+  definition. Postel's law argues for `toUpperCase()` and is defensible, but
+  normalising at the boundary means every downstream comparison, ledger row and
+  reconciliation report must agree on where normalisation happened — in payments
+  that ambiguity is how two systems end up disagreeing about whether they hold
+  the same currency. The JDK agrees: `Currency.getInstance("usd")` throws.
 - **Test cases:**
-  - valid — *TODO*
-  - invalid — *TODO*
-  - edge — lowercase input
+  - valid — `USD`
+  - invalid — `XYZ`
+  - edge — `usd`, `Usd`, `uSD` rejected, not normalised
+  - edge — `DEM` rejected even though the JDK knows it
+  - edge — absent and blank rejected
+  - pinned — a test asserts the JDK *does* still list `DEM` and `ZWD`, so if a
+    future JDK cleans up its data this justification fails loudly rather than
+    going stale
+
+**Status:** implemented, 10 tests passing.
 
 ---
 
