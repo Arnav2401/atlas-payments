@@ -1,5 +1,7 @@
 # atlas-payments
 
+[![CI](https://github.com/Arnav2401/atlas-payments/actions/workflows/ci.yml/badge.svg)](https://github.com/Arnav2401/atlas-payments/actions/workflows/ci.yml)
+
 A payment processing and financial-crime detection service.
 
 It accepts payment instructions over an HTTP API, validates them against ten
