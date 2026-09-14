@@ -12,6 +12,7 @@ import com.atlas.payments.persistence.PaymentStore;
 import com.atlas.payments.persistence.StoredPayment;
 import com.atlas.payments.validation.PaymentValidator;
 import com.atlas.payments.validation.ValidationOutcome;
+import org.slf4j.MDC;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -77,45 +78,70 @@ public class PaymentController {
     private final PaymentValidator validator;
     private final PaymentStore paymentStore;
     private final FraudClient fraudClient;
+    private final PaymentMetrics metrics;
     private final Clock clock;
 
     public PaymentController(PaymentValidator validator, PaymentStore paymentStore,
-                             FraudClient fraudClient, Clock clock) {
+                             FraudClient fraudClient, PaymentMetrics metrics, Clock clock) {
         this.validator = validator;
         this.paymentStore = paymentStore;
         this.fraudClient = fraudClient;
+        this.metrics = metrics;
         this.clock = clock;
     }
 
+    /**
+     * {@code endToEndId} goes into MDC as the very first thing this method
+     * does that has it available (it is payload data, not a header — nothing
+     * upstream of request-body binding could set it any earlier) and comes
+     * out in a {@code finally}, not just at the end of the happy path — a
+     * pooled Tomcat thread handles many requests over its lifetime, and a
+     * correlation id left in MDC after this method returns would leak onto
+     * whatever unrelated request that thread serves next. See
+     * logback-spring.xml for where this actually becomes a JSON log field.
+     */
     @PostMapping
     public ResponseEntity<PaymentSubmissionResponse> submit(
             @RequestHeader("Idempotency-Key") String idempotencyKey,
             @RequestBody PaymentInstructionRequest request) {
 
-        // Exhaustive over a sealed type: adding a third outcome stops this
-        // compiling rather than silently falling through.
-        return switch (validator.validate(request)) {
-            case ValidationOutcome.Accepted accepted -> {
-                try {
-                    StoredPayment stored = paymentStore.record(accepted.instruction(), idempotencyKey);
-                    FraudAssessment assessment = assessFraud(accepted.instruction(), stored);
-                    yield ResponseEntity.ok(PaymentSubmissionResponse.accepted(
-                            accepted.instruction().endToEndId(), stored.paymentId(), assessment));
-                } catch (InsufficientFundsException insufficient) {
-                    // A payment can pass all ten rules and still be refused by
-                    // the ledger, because the rules cannot see account state.
-                    // Same envelope as a validation rejection: the service
-                    // produced a decision, and the decision is the payload.
-                    yield ResponseEntity.ok(PaymentSubmissionResponse.rejectedByLedger(
-                            accepted.instruction().endToEndId(),
-                            InsufficientFundsException.CODE,
-                            "debtorAccount",
-                            insufficient.getMessage()));
+        MDC.put("endToEndId", request.endToEndId());
+        try {
+            // Exhaustive over a sealed type: adding a third outcome stops this
+            // compiling rather than silently falling through.
+            return switch (validator.validate(request)) {
+                case ValidationOutcome.Accepted accepted -> {
+                    try {
+                        StoredPayment stored = paymentStore.record(accepted.instruction(), idempotencyKey);
+                        FraudAssessment assessment = assessFraud(accepted.instruction(), stored);
+                        metrics.recordAccepted();
+                        if (assessment != null) {
+                            metrics.recordFraudAssessment(assessment.source().name(), assessment.flagged());
+                        }
+                        yield ResponseEntity.ok(PaymentSubmissionResponse.accepted(
+                                accepted.instruction().endToEndId(), stored.paymentId(), assessment));
+                    } catch (InsufficientFundsException insufficient) {
+                        // A payment can pass all ten rules and still be refused by
+                        // the ledger, because the rules cannot see account state.
+                        // Same envelope as a validation rejection: the service
+                        // produced a decision, and the decision is the payload.
+                        metrics.recordRejectedByLedger();
+                        yield ResponseEntity.ok(PaymentSubmissionResponse.rejectedByLedger(
+                                accepted.instruction().endToEndId(),
+                                InsufficientFundsException.CODE,
+                                "debtorAccount",
+                                insufficient.getMessage()));
+                    }
                 }
-            }
-            case ValidationOutcome.Rejected rejected -> ResponseEntity.ok(
-                    PaymentSubmissionResponse.rejected(request.endToEndId(), rejected.reasons()));
-        };
+                case ValidationOutcome.Rejected rejected -> {
+                    metrics.recordRejectedByValidation();
+                    yield ResponseEntity.ok(
+                            PaymentSubmissionResponse.rejected(request.endToEndId(), rejected.reasons()));
+                }
+            };
+        } finally {
+            MDC.remove("endToEndId");
+        }
     }
 
     /**

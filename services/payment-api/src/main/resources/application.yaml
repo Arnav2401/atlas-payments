@@ -12,7 +12,16 @@ spring:
   datasource:
     url: ${ATLAS_DB_URL:jdbc:postgresql://localhost:5432/atlas}
     username: ${ATLAS_DB_USER:atlas}
-    # Local default only. M5 removes the fallback and requires the variable.
+    # M5 update on the promise this comment used to make ("removes the
+    # fallback"): it doesn't, and here is why. The brief's actual bar is "no
+    # secret appears anywhere in the repository", checked by a scanner (see
+    # .github/workflows/ci.yml) — not "no default value anywhere". A local,
+    # low-entropy default for a Postgres container that docker-compose starts
+    # unexposed on localhost is not a secret worth protecting; requiring an
+    # operator to set it anyway would just make `docker compose up` stop
+    # being one command for no security benefit. Compare atlas.security.jwt-secret
+    # below, which has NO default, deliberately — that one actually is
+    # security-critical, since anyone who can read it can forge a valid token.
     password: ${ATLAS_DB_PASSWORD:atlas}
 
   jpa:
@@ -61,9 +70,46 @@ spring:
 server:
   port: 8080
 
+management:
+  endpoints:
+    web:
+      exposure:
+        # Nothing else - actuator exposes far more than this by default
+        # (env, beans, threaddump...) and every one of those is a real
+        # information-disclosure surface if left on. health is the container
+        # healthcheck's dependency; prometheus is the scrape target. Both are
+        # permitted without a token in SecurityConfig - see that class's
+        # javadoc for why, and for what that implies about network placement
+        # in a real deployment.
+        include: health, prometheus
+  prometheus:
+    metrics:
+      export:
+        enabled: true
+  metrics:
+    distribution:
+      # Needed for Prometheus's own histogram_quantile() to compute p50/p95/p99
+      # server-side from raw bucket counts, not just Micrometer's own
+      # client-computed percentiles (which cannot be aggregated correctly
+      # across multiple instances - histogram buckets can). This is the
+      # server-side measurement Grafana's dashboard reads; k6's numbers (see
+      # README) are the client-observed round trip, a different point on the
+      # same request and not expected to match exactly.
+      percentiles-histogram:
+        http.server.requests: true
+      slo:
+        http.server.requests: 50ms, 100ms, 200ms, 500ms, 1s
+
 atlas:
   fraud-service:
     base-url: ${ATLAS_FRAUD_SERVICE_URL:http://localhost:8001}
+  outbox:
+    poll-interval-ms: ${ATLAS_OUTBOX_POLL_INTERVAL_MS:500}
+  security:
+    # NO default - see the datasource password comment above for the
+    # contrast. Generate one with: openssl rand -base64 32
+    jwt-secret: ${ATLAS_JWT_SECRET}
+    token-ttl-minutes: ${ATLAS_JWT_TTL_MINUTES:15}
 
 resilience4j:
   circuitbreaker:

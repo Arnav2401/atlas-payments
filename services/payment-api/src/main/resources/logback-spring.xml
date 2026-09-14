@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    Structured JSON logging, correlated by endToEndId.
+
+    One line per log event, JSON, not the default human-readable pattern —
+    because "grep the log file" stops working the moment there is more than
+    one instance of this service, and a JSON line is what a real log
+    aggregator (the thing "correlated by endToEndId" is actually for) can
+    index and query on. logstash-logback-encoder includes every MDC key
+    automatically, which is the entire correlation mechanism: see
+    PaymentController.submit, the one place endToEndId is put into MDC —
+    deliberately there and not a generic servlet filter, because endToEndId
+    is payload data, not a header; nothing upstream of request-body binding
+    can see it. Known limit, stated rather than hidden: a request that never
+    reaches submit's body at all (malformed JSON, for instance) logs without
+    that correlation id, because at that point it genuinely is not known yet.
+    Every log line emitted anywhere DURING a submitted request's
+    processing — the validator, the ledger, the fraud client — carries it,
+    without any of those classes needing to know correlation exists.
+-->
+<configuration>
+    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <!-- endToEndId (and any other MDC key) is included automatically;
+                 no explicit provider configuration needed for that. -->
+            <customFields>{"service":"payment-api"}</customFields>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="JSON"/>
+    </root>
+
+    <!-- Quieter than INFO for framework internals - the connection-retry
+         noise from Kafka clients when the broker briefly isn't reachable
+         (see PaymentAuthorizationTest's javadoc) would otherwise dominate
+         every log stream at the level this project's own log lines use. -->
+    <logger name="org.apache.kafka" level="WARN"/>
+    <logger name="org.hibernate" level="WARN"/>
+</configuration>

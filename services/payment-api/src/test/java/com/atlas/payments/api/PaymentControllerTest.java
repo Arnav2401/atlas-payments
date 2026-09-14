@@ -76,6 +76,10 @@ class PaymentControllerTest {
     @MockitoBean
     private PaymentStore paymentStore;
 
+    /** A real bean would need a MeterRegistry; mocked here for the same reason FraudClient is. */
+    @MockitoBean
+    private PaymentMetrics paymentMetrics;
+
     /**
      * Mocked, never the real HTTP client: a @WebMvcTest slice does not start a
      * fraud service to call, and should not need one to assert the HTTP
