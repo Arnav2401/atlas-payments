@@ -9,7 +9,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M4 core complete — transactional outbox, KRaft-mode Kafka, an idempotent async decisioning pipeline, and a dead-letter queue, all proven live against a real broker, not just in tests. 139 Java tests, 11 Python tests passing.
+**Status:** M5 complete — JWT auth with role-based access control, a React + TypeScript ops console, Prometheus + Grafana observability, the full stack packaged as one `docker compose up`, a k6 load test with real regenerable numbers, and a CI secret scanner, on top of M1-M4's payment API, double-entry ledger, transactional outbox, KRaft-mode Kafka pipeline, and explainable fraud model. 153 Java tests, 11 Python tests passing.
 
 ## A note on ISO 20022
 
@@ -65,17 +65,48 @@ claims specification compliance.
                    │
                    v
         ┌──────────────────────┐
-        │  Ops console         │  React — payment list, score, top features
-        └──────────────────────┘
+        │  Ops console         │  React + TypeScript, JWT auth — payment
+        │  (ops-console/)      │  list, fraud score, top SHAP features,
+        └──────────────────────┘  review/clear/escalate
 
-Observability: Prometheus + Grafana across all services
+Auth: JWT bearer tokens, RBAC (ANALYST / SUPERVISOR), enforced with
+@PreAuthorize on the payment API and CORS-restricted on the ops console's
+origin. Observability: Prometheus + Grafana across all services.
 ```
 
 ## Run
 
+### The full stack, one command
+
+```bash
+cp .env.example .env
+# then edit .env: ATLAS_JWT_SECRET=$(openssl rand -base64 32)
+docker compose up -d
+```
+
+Brings up all eight services — Postgres, Redis, KRaft-mode Kafka,
+fraud-service, payment-api, the ops console, Prometheus, and Grafana — with
+the payment API on `:8080`, the ops console on `:3002`, Prometheus on
+`:9090`, and Grafana on `:3001` (`admin` / `atlas-demo`, or browse
+anonymously — read-only, no login needed). This needs
+`services/fraud-service/models/model.json` to already exist (see training,
+below) — `docker compose up fraud-service` fails fast at startup rather than
+serving with no model if that step was skipped.
+
+`ATLAS_JWT_SECRET` has no default anywhere in the app — see [Security, observability, and packaging](#security-observability-and-packaging-m5)
+— so `.env` (gitignored; `.env.example` documents the shape) must set a real
+one before `payment-api` will start. Get a token and try it:
+
+```bash
+curl -X POST localhost:8080/auth/token -H 'Content-Type: application/json' \
+  -d '{"username":"analyst1","password":"analyst-demo-password"}'
+```
+
+### Just the payment API, against local infra
+
 ```bash
 docker compose up -d postgres redis   # fraud-service needs a trained model first — see below
-./gradlew :services:payment-api:bootRun
+ATLAS_JWT_SECRET=$(openssl rand -base64 32) ./gradlew :services:payment-api:bootRun
 ```
 
 Flyway applies the schema at startup. `ddl-auto` is `validate`, so a drift
@@ -99,6 +130,23 @@ uv run uvicorn fraud_service.main:app --port 8001          # or: docker compose 
 > `~/.local/share/uv/python/cpython-3.12.14-macos-aarch64-none/lib/libomp.dylib`
 > (or the equivalent path for your uv-managed Python install). The Docker
 > image needs no such workaround — `apt-get install libgomp1` there instead.
+
+### Ops console
+
+`docker compose up -d` already brings this up at `localhost:3002`. To run it
+against a payment-api on the host instead:
+
+```bash
+cd ops-console
+npm install
+npm run dev   # localhost:5173, proxies nowhere - it talks to VITE_API_BASE_URL directly
+```
+
+Sign in as `analyst1` or `supervisor1` (same demo passwords as above). Try
+clearing or escalating a flagged payment as `analyst1` — the buttons are not
+hidden by role (see the comment in `ops-console/src/App.tsx`'s
+`PaymentDetail`), so this is a real 403 from `@PreAuthorize` on the server,
+not a client-side illusion of access control.
 
 ## The ledger
 
@@ -525,6 +573,117 @@ row — treating green tests as a reason to verify, not a reason to stop.
    for all three topics before the consumer starts, matching the Java side's
    approach rather than trusting broker timing.
 
+## Security, observability, and packaging (M5)
+
+### Authentication and authorization
+
+Self-issued JWTs (HMAC-SHA256, Nimbus), two roles — `ANALYST` and
+`SUPERVISOR` — enforced with `@PreAuthorize` at the method level, not just
+routing. `POST /auth/token` exchanges a username/password for a token;
+everything else requires `Authorization: Bearer <token>`.
+
+- Any authenticated role can view payments and request a review.
+- Only `SUPERVISOR` can clear or escalate a flagged payment, or fund an
+  account via `POST /ops/funding`.
+- `atlas.security.jwt-secret` has **no default anywhere** — the app fails to
+  start rather than run with a guessable signing key. Compare the DB password
+  and demo-user passwords, which do have local-dev defaults, documented at
+  each definition in `application.yaml` and `DemoUserStore.java` for why that
+  asymmetry is deliberate: one is genuinely security-critical, the others are
+  low-entropy values in a container never exposed off `localhost`.
+- There is no real user directory — two fixed demo users (`analyst1`,
+  `supervisor1`), BCrypt-hashed, documented in `DemoUserStore.java` as a
+  deliberate simplification, not an oversight.
+
+Proven live against the real Spring Security filter chain (not a mocked
+one) in `PaymentAuthorizationTest`: wrong password → 401, tampered token
+signature → 401, token signed with a different key → 401, an `ANALYST`
+token against `/ops/funding` → 403, a `SUPERVISOR` token against the same
+endpoint → 200.
+
+### Observability
+
+- **Metrics** — Micrometer + `/actuator/prometheus`. `atlas_payments_decisions_total{outcome}`
+  and `atlas_payments_fraud_assessments_total{source,flagged}` are custom
+  counters, kept separate because a payment can be `ACCEPTED` and flagged by
+  the model at the same time. See [DECISION 1](services/payment-api/src/main/java/com/atlas/payments/api/PaymentController.java)
+  in `PaymentController` for why these counters — not HTTP status codes — are
+  the only place a rejection is actually visible: every decision, accepted or
+  rejected, returns HTTP 200.
+- **Dashboards** — Grafana, provisioned as code (`observability/grafana/provisioning/`),
+  not clicked together by hand. [`observability/grafana/dashboards/atlas-payments.json`](observability/grafana/dashboards/atlas-payments.json)
+  covers decision-outcome throughput, the fraud model's MODEL-vs-`FALLBACK_RULES`
+  split (the operational tell for "is the circuit breaker open"), the
+  resilience4j circuit breaker state, and server-side p50/p95/p99 latency via
+  `histogram_quantile()` over the `http_server_requests_seconds` histogram —
+  a different measurement point from k6's client-observed numbers in the
+  table below, and not expected to match them exactly.
+- **Logs** — structured JSON (`logstash-logback-encoder`), correlated by
+  `endToEndId` via MDC, set in `PaymentController.submit` and removed in a
+  `finally` so a pooled Tomcat thread never leaks one request's correlation
+  id onto the next request it serves.
+
+### Packaging
+
+`docker compose up -d` brings up all eight services — Postgres, Redis, Kafka
+(KRaft mode), fraud-service, payment-api, the ops console, Prometheus,
+Grafana — as one command. Three things found only by actually running that
+command, not by inspecting the compose file:
+
+- **A Kafka advertised-listener bug.** A single `PLAINTEXT` listener
+  advertised as `localhost:9092` works from the host and from inside the
+  Kafka container itself (`docker exec`) — the two ways this project's Kafka
+  connectivity had been tested through M4 — but silently fails for genuine
+  container-to-container traffic, because Kafka's metadata response tells
+  every client to reconnect to `localhost:9092`, which from inside another
+  container is that container's own network namespace. Fixed with the
+  standard two-listener split: `PLAINTEXT` (host access) and `INTERNAL`
+  (container-to-container, advertised as `kafka:29092`) — see the extended
+  comment on the `kafka` service in `docker-compose.yml`.
+- **A Docker layer-caching bug in the fraud-service build.** `uv sync` builds
+  and installs the local `fraud_service` package itself, not just its
+  dependencies — but the Dockerfile copied `pyproject.toml`/`uv.lock` and ran
+  `uv sync` *before* `COPY src/`, so the project's own source did not exist
+  yet at install time. The build succeeded (dependencies installed fine); the
+  container then failed at startup with `ModuleNotFoundError: No module named
+  'fraud_service'`. Fixed by splitting into `uv sync --no-install-project`
+  (cached, dependency-only) followed by a second `uv sync` after `COPY src/`
+  — see `services/fraud-service/Dockerfile`.
+- **No CORS configuration at all.** The payment API had never been called
+  from a browser before the ops console existed, so nothing had ever
+  exercised the gap: Spring Security's default is to allow no cross-origin
+  requests, and the ops console's own `fetch()` calls failed silently in the
+  browser (blocked before the JWT check ever ran) the first time it was
+  pointed at a real backend. Fixed with an explicit origin allowlist in
+  `SecurityConfig.corsConfigurationSource` — `localhost:5173` (Vite dev
+  server) and `localhost:3002` (the compose service) by default, not `"*"`,
+  since a wildcard origin cannot be combined with credentialed requests
+  (the `Authorization` header) under the CORS spec anyway.
+
+### Connection pool sizing, found by running the load test, not by guessing
+
+The first real k6 run against the full docker-compose stack (20 VUs) came
+back with `p(99)=30.03s` and a 1.09% error rate — both failing the script's
+own thresholds. The cause was in the payment-api logs, not a mystery:
+
+```
+HikariPool-1 - Connection is not available, request timed out after 30001ms
+(total=10, active=10, idle=0, waiting=18)
+```
+
+Spring Boot's default Hikari pool size (10) was never tuned, because nothing
+before this load test ever asked for more than 10 concurrent DB-bound
+requests at once. `spring.jpa.open-in-view` is already `false` (see the
+`jpa` block in `application.yaml`), so a connection is only held for the
+ledger write and outbox insert inside `PaymentStore.record`'s own
+`@Transactional` method — not across the synchronous fraud-service HTTP call
+that follows it — which rules out a connection leak; this was purely "20
+concurrent requests offered against a 10-connection ceiling." Set
+`spring.datasource.hikari.maximum-pool-size: 20` — a number taken directly
+from this test's own VU count, not a guess — and the same scenario re-run
+clean: 0% errors, `p(95)=267ms`, `p(99)=330ms`. Both numbers are in the table
+below and in `application.yaml`'s own comment on the setting.
+
 ## Metrics
 
 Every number below must be regenerable by a command in this repo. Nothing goes
@@ -535,9 +694,19 @@ here that cannot be reproduced on demand.
 | Model PR-AUC | 0.9964 | `uv run python -m training.train --data <path>` |
 | Precision at 80% recall | 0.9983 | `uv run python -m training.train --data <path>` |
 | Decision threshold + cost justification | 0.163, see `models/metrics.json` | `uv run python -m training.train --data <path>` |
-| Sustained throughput | *TBD (M5)* | |
-| p50 / p95 / p99 latency | *TBD (M5)* | |
+| Sustained throughput | ~98 req/s @ 20 concurrent VUs | `docker run --rm -i --network atlas-payments_default -e BASE_URL=http://payment-api:8080 -v "$(pwd)/load-test:/scripts" grafana/k6 run /scripts/payments-load-test.js` |
+| p50 / p95 / p99 latency | 166ms / 267ms / 330ms | (same command) |
+| Error rate under load | 0.00% (6,899/6,899 payments decisioned, 100% ACCEPTED) | (same command) |
 | Feature computation p99 | 0.70ms | `uv run pytest tests/test_feature_latency.py -s` (needs Redis) |
+
+Throughput is bounded by the synchronous fraud-service round trip
+(XGBoost inference + SHAP `TreeExplainer`, one call per payment, no batching)
+— not by the ledger write, which is the cheaper half of the request by a wide
+margin. See [`load-test/payments-load-test.js`](load-test/payments-load-test.js)
+for the scenario (20 VUs ramped over 70s against a pool of 20 pre-funded debtor
+accounts, one per VU, so no two VUs contend for the same account row) and
+[Connection pool sizing](#connection-pool-sizing-found-by-running-the-load-test-not-by-guessing)
+below for a real capacity bug this test found on its first real run.
 
 ## Documentation
 
