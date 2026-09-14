@@ -34,6 +34,7 @@ docs/samples/*.csv
 # human-readable and is committed deliberately — it IS the reported numbers.
 services/fraud-service/models/*.json
 !services/fraud-service/models/metrics.json
+!services/fraud-service/models/graph_uplift_metrics.json
 services/fraud-service/models/*.csv
 services/fraud-service/.venv/
 services/fraud-service/__pycache__/
