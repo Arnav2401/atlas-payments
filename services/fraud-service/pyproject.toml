@@ -20,6 +20,9 @@ dependencies = [
     "joblib>=1.4",
     "pyarrow>=17.0",
     "aiokafka>=0.11",
+    # M6 (optional): the counterparty graph - see graph/.
+    "neo4j>=5.24",
+    "graphdatascience>=1.11",
 ]
 
 [dependency-groups]
@@ -35,4 +38,4 @@ dev = [
 testpaths = ["tests"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/fraud_service", "training"]
+packages = ["src/fraud_service", "training", "graph"]

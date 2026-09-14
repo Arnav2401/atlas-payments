@@ -37,6 +37,32 @@ services:
       timeout: 3s
       retries: 10
 
+  # M6 (optional): the counterparty graph, for Louvain community detection and
+  # centrality-based mule identification - see services/fraud-service/graph/.
+  # NEO4J_PLUGINS downloads the free Graph Data Science library (Community
+  # Edition-compatible) on first startup; unrestricted.procedures allowlists
+  # its `gds.*` Cypher procedures, which Neo4j blocks by default as a
+  # defence-in-depth measure against arbitrary plugin code.
+  neo4j:
+    image: neo4j:5-community
+    container_name: atlas-neo4j
+    environment:
+      # Local development only, same reasoning as the Postgres password above.
+      NEO4J_AUTH: neo4j/atlas-demo-password
+      NEO4J_PLUGINS: '["graph-data-science"]'
+      NEO4J_dbms_security_procedures_unrestricted: gds.*
+    ports:
+      - "7474:7474"   # Browser UI, for exploring the graph by hand
+      - "7687:7687"   # Bolt, for the Python driver
+    volumes:
+      - atlas-neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
   # KRaft mode, single broker, no ZooKeeper - the apache/kafka image runs
   # Kafka's own consensus (KRaft) rather than depending on a second
   # coordination service, which is what keeps this to one container instead
@@ -94,12 +120,27 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      # Not service_healthy: Neo4j's own healthcheck only passes once the GDS
+      # plugin has finished downloading (30s+ on first pull), and M6 is
+      # optional - fraud-service must not block its own startup on a
+      # dependency it can run without. GraphDatabase.driver() in main.py is
+      # lazy (no eager connection), so this ordering hint (container started,
+      # not yet necessarily ready) is enough; a GET /rings before Neo4j is
+      # actually reachable fails that one request, not the whole service.
+      neo4j:
+        condition: service_started
     environment:
       FRAUD_REDIS_URL: redis://redis:6379/0
       # kafka:29092, not :9092 - the INTERNAL (container-to-container)
       # listener. See the kafka service's own comment above for why the two
       # are not interchangeable.
       ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      # M6 (optional): see config.py - unset would mean GET /rings reports
+      # disabled. Left set here because this compose file already brings up
+      # neo4j; a deployment without M6 would simply drop both.
+      ATLAS_NEO4J_URI: bolt://neo4j:7687
+      ATLAS_NEO4J_USER: neo4j
+      ATLAS_NEO4J_PASSWORD: atlas-demo-password
     ports:
       - "8001:8001"
     healthcheck:
@@ -187,3 +228,4 @@ services:
 
 volumes:
   atlas-pgdata:
+  atlas-neo4j-data:
