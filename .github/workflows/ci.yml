@@ -16,6 +16,31 @@ permissions:
   contents: read
 
 jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # gitleaks scans commit history, not just the working tree - a
+          # secret committed once and later deleted is still a leak. Default
+          # checkout depth (1) would only see the tip commit.
+          fetch-depth: 0
+
+      # No allowlist config: verified locally (docker run gitleaks detect)
+      # that the repo's actual git history is clean, including the things
+      # that look secret-shaped but aren't - the test-only JWT constant in
+      # TestSecurity.java and the local-dev demo/DB passwords, none of which
+      # are high-entropy enough to trip gitleaks' default rules. The only
+      # real secret in this project, ATLAS_JWT_SECRET in .env, is gitignored
+      # and has never been committed.
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   build:
     name: Build and test
     runs-on: ubuntu-latest
