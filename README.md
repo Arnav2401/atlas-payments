@@ -9,7 +9,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M5 complete — JWT auth with role-based access control, a React + TypeScript ops console, Prometheus + Grafana observability, the full stack packaged as one `docker compose up`, a k6 load test with real regenerable numbers, and a CI secret scanner, on top of M1-M4's payment API, double-entry ledger, transactional outbox, KRaft-mode Kafka pipeline, and explainable fraud model. 153 Java tests, 11 Python tests passing.
+**Status:** M5 complete, M6 (optional) built and measured — JWT auth with role-based access control, a React + TypeScript ops console, Prometheus + Grafana observability, the full stack packaged as one `docker compose up`, a k6 load test with real regenerable numbers, a CI secret scanner, and a Neo4j counterparty graph (Louvain + centrality) that detects 6/6 planted fraud rings but measured a small PR-AUC *regression* when fed back into the M3 model — reported honestly rather than left out. On top of M1-M4's payment API, double-entry ledger, transactional outbox, KRaft-mode Kafka pipeline, and explainable fraud model. 158 Java tests, 18 Python tests passing.
 
 ## A note on ISO 20022
 
@@ -54,8 +54,13 @@ claims specification compliance.
         │  - velocity features │  Redis
         │  - SHAP explanations │
         └──────────┬───────────┘
-                   │
-                   v
+                   │                    ┌──────────────────────┐
+                   │            reads   │  Neo4j (M6, optional) │
+                   │        ┌───────────│  - counterparty graph │
+                   │        │           │  - Louvain + degree/  │
+                   │        │           │    PageRank centrality│
+                   │        │           └──────────────────────┘
+                   v        │
               [ Kafka ]  payments.decisioned  +  DLQ
                    │
                    v
@@ -67,11 +72,14 @@ claims specification compliance.
         ┌──────────────────────┐
         │  Ops console         │  React + TypeScript, JWT auth — payment
         │  (ops-console/)      │  list, fraud score, top SHAP features,
-        └──────────────────────┘  review/clear/escalate
+        └──────────────────────┘  review/clear/escalate, fraud rings
 
 Auth: JWT bearer tokens, RBAC (ANALYST / SUPERVISOR), enforced with
 @PreAuthorize on the payment API and CORS-restricted on the ops console's
-origin. Observability: Prometheus + Grafana across all services.
+origin. Observability: Prometheus + Grafana across all services. The ops
+console never talks to fraud-service or Neo4j directly - GET /rings is
+proxied through payment-api so M6 answers to the same auth boundary as
+everything else (see RingsController).
 ```
 
 ## Run
@@ -84,14 +92,16 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Brings up all eight services — Postgres, Redis, KRaft-mode Kafka,
-fraud-service, payment-api, the ops console, Prometheus, and Grafana — with
-the payment API on `:8080`, the ops console on `:3002`, Prometheus on
-`:9090`, and Grafana on `:3001` (`admin` / `atlas-demo`, or browse
-anonymously — read-only, no login needed). This needs
-`services/fraud-service/models/model.json` to already exist (see training,
-below) — `docker compose up fraud-service` fails fast at startup rather than
-serving with no model if that step was skipped.
+Brings up all nine services — Postgres, Redis, KRaft-mode Kafka,
+fraud-service, payment-api, the ops console, Prometheus, Grafana, and Neo4j
+(M6, optional) — with the payment API on `:8080`, the ops console on
+`:3002`, Prometheus on `:9090`, Grafana on `:3001` (`admin` / `atlas-demo`,
+or browse anonymously — read-only, no login needed), and Neo4j's own browser
+UI on `:7474`. This needs `services/fraud-service/models/model.json` to
+already exist (see training, below) — `docker compose up fraud-service`
+fails fast at startup rather than serving with no model if that step was
+skipped. Neo4j comes up empty; see [Fraud rings](#fraud-rings--the-counterparty-graph-m6-optional)
+below for loading the graph.
 
 `ATLAS_JWT_SECRET` has no default anywhere in the app — see [Security, observability, and packaging](#security-observability-and-packaging-m5)
 — so `.env` (gitignored; `.env.example` documents the shape) must set a real
@@ -625,9 +635,10 @@ endpoint → 200.
 
 ### Packaging
 
-`docker compose up -d` brings up all eight services — Postgres, Redis, Kafka
+`docker compose up -d` brings up all nine services — Postgres, Redis, Kafka
 (KRaft mode), fraud-service, payment-api, the ops console, Prometheus,
-Grafana — as one command. Three things found only by actually running that
+Grafana, and Neo4j (M6, optional — added later, but the same one compose
+file) — as one command. Three things found only by actually running that
 command, not by inspecting the compose file:
 
 - **A Kafka advertised-listener bug.** A single `PLAINTEXT` listener
@@ -684,6 +695,126 @@ from this test's own VU count, not a guess — and the same scenario re-run
 clean: 0% errors, `p(95)=267ms`, `p(99)=330ms`. Both numbers are in the table
 below and in `application.yaml`'s own comment on the setting.
 
+## Fraud rings — the counterparty graph (M6, optional)
+
+Per-transaction scoring (M3) is structurally blind to coordinated fraud: a
+model looking at one payment at a time cannot see that a dozen accounts are
+funnelling into one mule account. M6 builds a Neo4j graph of the same
+training data, runs Louvain community detection and degree/PageRank
+centrality over it, and answers two separately measured questions rather
+than one vague one — "does this find planted rings" and "does it make the
+real fraud model better" are different claims, and conflating them would
+have hidden the second one's honest, negative answer behind the first one's
+real, positive one.
+
+Optional and off by default: nothing in M1-M5 depends on Neo4j. Bring it up
+with `docker compose up -d neo4j` (already part of the full `docker compose
+up -d`), then:
+
+```bash
+cd services/fraud-service
+uv run python -m graph.build_graph --data /path/to/paysim.csv   # ~80s, 2.1M edges
+uv run python -m graph.plant_rings                               # 6 synthetic rings, ~instant
+uv run python -m graph.detect_rings                               # Louvain + degree centrality, ~15s
+uv run python -m training.train_graph_uplift --data /path/to/paysim.csv   # ~5 min, 2 model fits
+```
+
+### Ring detection: 0% recall, then 100%, and why the first number is the interesting part
+
+`graph/plant_rings.py` seeds 6 synthetic fan-in rings (8 to 22 source
+accounts each, all funnelling into one mule account within a coordinated
+few-hour window) — planted rather than found, because PaySim's own fraud
+mechanism is a single-hop drain-and-cash-out pattern with no naturally
+occurring, *labelled* multi-account ring to detect (see
+`graph/plant_rings.py`'s module docstring). `graph/detect_rings.py` then
+ranks every account by `in_degree / (temporal_spread_hours + 1)` — high
+fan-in concentrated into a short window.
+
+The first real run scored **0 of 6** planted mules in the top 15. Not a bug: an
+ordinary account that happened to receive from 4-7 distinct senders within
+the same PaySim simulation step (common — median volume is 112 rows/step)
+scored higher than every planted ring, because a small in-degree only needs
+a small, easily coincidental temporal spread to look "concentrated" under a
+pure ratio. Measured directly against the graph: 96,638 real accounts clear
+an in-degree of 8, with a *mean* temporal spread of 252 hours — so once
+accounts too small to be a meaningful ring candidate are excluded first
+(`MIN_SUSPICIOUS_IN_DEGREE = min(RING_SIZES) = 8`, not a tuned constant —
+see `graph/detect_rings.py`), the same ranking scores **6 of 6 planted mules
+in the top 8** (recall 100%, precision@15 40% against a background of
+304,868 real repeat destinations):
+
+```
+RING5-MULE   community 2377111   in-degree 22   spread 6h   score 3.14   PLANTED
+RING4-MULE   community 2377088   in-degree 18   spread 6h   score 2.57   PLANTED
+RING3-MULE   community 2377069   in-degree 15   spread 6h   score 2.14   PLANTED
+C474170199   community 1354346   in-degree  9   spread 4h   score 1.80
+RING2-MULE   community 2377053   in-degree 12   spread 6h   score 1.71   PLANTED
+C1795041102  community  244659   in-degree  9   spread 5h   score 1.50
+RING1-MULE   community 2377040   in-degree 10   spread 6h   score 1.43   PLANTED
+RING0-MULE   community 2377029   in-degree  8   spread 5h   score 1.33   PLANTED
+```
+
+The ops console's "Fraud rings" tab (`GET /rings`, proxied through
+payment-api so the browser never talks to fraud-service or Neo4j directly —
+see `RingsController`'s javadoc) renders this same ranking live, with a
+`PLANTED` badge on the six accounts that are ground truth rather than a real
+finding.
+
+**A fourth bug, found wiring that tab up for real:** `RingsClient` first
+reused `RestFraudClient`'s shared `RestClient` bean, whose 800ms read
+timeout is tuned tightly for `/score` — a per-payment call on the critical
+path. `GET /rings` is a heavier one-off Cypher aggregation, and it missed
+that window in practice (`SocketTimeoutException: Read timed out` in
+payment-api's own logs, the first time the ops console's tab was actually
+opened against a live graph, not assumed from reading the two call shapes
+side by side). Fixed with its own `RestClient` bean and a 5s timeout
+(`RingsClientConfig`) — same host, a budget that matches what the call
+actually does.
+
+### Graph features fed back into the M3 model: a measured regression, reported as one
+
+`training/train_graph_uplift.py` joins three account-level graph features
+(`dest_graph_in_degree`, `dest_pagerank`, `dest_community_size` — computed
+from the training-period graph only, the same causality boundary M3's own
+velocity features enforce; see `graph/build_graph.py`'s module docstring)
+onto the M3 feature set and re-derives the baseline in the same run, so the
+comparison is apples-to-apples rather than a diff against a possibly-stale
+committed number:
+
+| | Feature count | PR-AUC | Precision @ 80% recall |
+|---|---|---|---|
+| Baseline (M3) | 12 | 0.9964 | 0.9983 |
+| + graph features | 15 | 0.9957 | 0.9986 |
+| **Delta** | | **-0.0007** | +0.0003 |
+
+**PR-AUC went down, not up.** Reported as measured rather than tuned away,
+because that is the honest answer to the brief's own question ("measure and
+report the PR-AUC delta"), not the flattering one. Two things are true at
+once and worth stating plainly:
+
+- The graph features are not noise — `dest_pagerank` and
+  `dest_community_size` rank 5th and 6th by mean |SHAP| in the augmented
+  model, ahead of the existing `dest_prior_txn_count_24h`. They carry real
+  signal.
+- They still made held-out PR-AUC very slightly worse. The likely reason,
+  not just asserted but implied by the coverage numbers in the same run:
+  graph feature coverage is 95.5% on train but only 60.6% on test (the
+  MIN_DEST_IN_DEGREE-scoped graph does not cover every test-period
+  destination), and the baseline is already at 0.9964 PR-AUC — there is
+  almost no headroom left, and `dest_prior_distinct_senders_24h`
+  (already in the M3 feature set) was already capturing most of the
+  windowed fan-in signal a coarser, static graph snapshot adds less on top
+  of than it costs in train/test coverage mismatch.
+
+**Done when, per the brief:** a planted ring is detected (yes — 6 of 6,
+top 8) — the second half ("PR-AUC improvement measured and stated")
+is answered honestly: measured, and it is a regression, not an improvement.
+The brief's own words apply directly — "the measured lift is what makes
+this module worth two weeks... build it only if you will measure it" — the
+measurement is what M6 delivers here, not a claimed lift that did not
+happen. `models/graph_uplift_metrics.json` is the exact output of the run
+above.
+
 ## Metrics
 
 Every number below must be regenerable by a command in this repo. Nothing goes
@@ -698,6 +829,8 @@ here that cannot be reproduced on demand.
 | p50 / p95 / p99 latency | 166ms / 267ms / 330ms | (same command) |
 | Error rate under load | 0.00% (6,899/6,899 payments decisioned, 100% ACCEPTED) | (same command) |
 | Feature computation p99 | 0.70ms | `uv run pytest tests/test_feature_latency.py -s` (needs Redis) |
+| M6: planted ring detection | 6/6 recall, 40% precision@15 | `uv run python -m graph.detect_rings` (after `build_graph` + `plant_rings`) |
+| M6: graph-feature PR-AUC delta | -0.0007 (regression, reported as measured) | `uv run python -m training.train_graph_uplift --data <path>`, see `models/graph_uplift_metrics.json` |
 
 Throughput is bounded by the synchronous fraud-service round trip
 (XGBoost inference + SHAP `TreeExplainer`, one call per payment, no batching)
