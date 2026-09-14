@@ -223,6 +223,32 @@ class PaymentAuthorizationTest {
         assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
     }
 
+    // ------------------------------------------------------------- /rings (M6, optional)
+
+    /**
+     * No fraud-service running in this test class at all (unlike
+     * {@code FraudClientResilienceTest} / {@code RingsClientTest}, which use
+     * WireMock) - so this also proves {@link com.atlas.payments.rings.RingsClient}'s
+     * graceful degradation end-to-end, through the real controller, not just
+     * unit-tested in isolation. The claim under test here is narrower,
+     * though: that both roles can reach /rings at all - RBAC, same as
+     * viewing payments, since M6's ring view is read-only ops data, not a
+     * decision action.
+     */
+    @Test
+    void an_analyst_can_view_rings() {
+        String token = tokenFor("analyst1", "analyst-demo-password");
+        var response = rest.exchange(baseUrl("/rings"), HttpMethod.GET, bearer(token), String.class);
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
+    @Test
+    void a_supervisor_can_view_rings_too() {
+        String token = tokenFor("supervisor1", "supervisor-demo-password");
+        var response = rest.exchange(baseUrl("/rings"), HttpMethod.GET, bearer(token), String.class);
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+    }
+
     private HttpHeaders authHeaders(String token) {
         HttpHeaders headers = new HttpHeaders();
         headers.setBearerAuth(token);
