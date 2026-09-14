@@ -3,6 +3,7 @@ package com.atlas.payments.api;
 import com.atlas.payments.api.dto.ApiError;
 import com.atlas.payments.ledger.IdempotencyConflictException;
 import com.atlas.payments.ledger.LedgerConflictException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -64,6 +65,22 @@ public class ApiExceptionHandler {
     public ResponseEntity<ApiError> handleLedgerConflict(LedgerConflictException exception) {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
                 ApiError.LEDGER_CONFLICT, exception.getMessage()));
+    }
+
+    /**
+     * Two payments raced on the same account and this one lost the version check.
+     *
+     * <p>409, not 500 — the brief's requirement that the conflict is handled
+     * explicitly. It is also honest advice: the caller may safely resubmit with
+     * the same Idempotency-Key, and will either win the race or be told the
+     * payment already exists. A transient conflict is a different thing from a
+     * business rejection, which is why this is not a 200 REJECTED.
+     */
+    @ExceptionHandler(OptimisticLockingFailureException.class)
+    public ResponseEntity<ApiError> handleConcurrentModification(OptimisticLockingFailureException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
+                ApiError.CONCURRENT_MODIFICATION,
+                "A concurrent payment modified this account. Resubmit with the same Idempotency-Key."));
     }
 
     /**

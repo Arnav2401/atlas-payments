@@ -1,6 +1,8 @@
 package com.atlas.payments.ledger;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
@@ -40,6 +42,10 @@ public class AccountEntity {
     @Column(nullable = false, length = 3)
     private String currency;
 
+    @Enumerated(EnumType.STRING)
+    @Column(name = "account_type", nullable = false, length = 16)
+    private AccountType accountType;
+
     @Version
     @Column(nullable = false)
     private Long version;
@@ -50,9 +56,10 @@ public class AccountEntity {
     protected AccountEntity() {
     }
 
-    public AccountEntity(String accountNumber, String currency, Instant createdAt) {
+    public AccountEntity(String accountNumber, String currency, AccountType accountType, Instant createdAt) {
         this.accountNumber = accountNumber;
         this.currency = currency;
+        this.accountType = accountType;
         this.createdAt = createdAt;
     }
 
@@ -66,6 +73,10 @@ public class AccountEntity {
 
     public String getCurrency() {
         return currency;
+    }
+
+    public AccountType getAccountType() {
+        return accountType;
     }
 
     public Long getVersion() {

@@ -23,4 +23,7 @@ public record ApiError(String code, String message) {
 
     /** The payment cannot be posted as instructed. */
     public static final String LEDGER_CONFLICT = "ATLAS-E004";
+
+    /** A concurrent payment on the same account won the version check. Retryable. */
+    public static final String CONCURRENT_MODIFICATION = "ATLAS-E005";
 }

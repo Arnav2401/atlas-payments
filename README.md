@@ -9,7 +9,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M2 in progress — double-entry ledger on PostgreSQL. 124 tests passing.
+**Status:** M2 core complete — double-entry ledger with available-funds checking on PostgreSQL. 129 tests passing.
 
 ## A note on ISO 20022
 
@@ -149,13 +149,60 @@ directions, which is how a broken ledger looks healthy from a distance.
 Verified green over 10,000 synthetic payments (13.5s, ~735/s single-threaded —
 an early number, not a benchmark; M5 measures properly under k6).
 
+### Available funds and optimistic locking
+
+Accounts are typed `CUSTOMER` or `SETTLEMENT`. A customer deposit is a
+liability of the bank, so a funded customer account carries a *negative*
+signed balance in this ledger's convention (positive = debit); what they can
+spend is the negation of it. `SETTLEMENT` accounts are the bank's own position
+and are exempt from the funds check — otherwise the first funding entry ever
+made would be refused for overdrawing the bank.
+
+The debtor account is read with `OPTIMISTIC_FORCE_INCREMENT`, not plain
+optimistic locking. A plain lock only detects that someone else modified the
+row; the danger here is the opposite shape — two payments both read the same
+unmodified, sufficient balance and both decide to proceed. Forcing the version
+increment makes each reader a writer, so the second to commit conflicts and is
+reported as `409 ATLAS-E005`, safely retryable under the same idempotency key.
+
+**The creditor is deliberately read without the lock.** It is written to, never
+read-and-decided-upon, so locking it protects nothing and only adds contention
+— a payroll run crediting many payments to one popular account would otherwise
+serialise for no reason. A test found this the hard way: eight concurrent
+first-time payments to one new shared creditor failed on version conflicts
+until the lock was scoped to the debtor only.
+
+Optimistic over pessimistic (`SELECT FOR UPDATE`): pessimistic serialises every
+payment on an account whether or not there is real contention, and holds the
+lock for the transaction's duration. Optimistic costs nothing when conflicts
+are rare, which is the normal case for a retail account, and costs a 409 when
+they are not. The calculus inverts for a heavily used treasury account, where
+`SELECT FOR UPDATE` would be the right call for that account specifically.
+
+### Get-or-create under concurrency
+
+Two different first-time payments to the same new counterparty race exactly
+like the idempotency case: both find no existing account and both try to
+insert one. `AccountProvisioner` resolves it the same way — attempt the
+insert, let the unique constraint decide, treat a conflict as "it exists now".
+
+**This class exists in its current shape because of a bug in an earlier
+version of itself.** A convenience method called the transactional insert from
+another method on the *same* object — self-invocation, which Spring's
+proxy-based `@Transactional` does not intercept, so the annotation was
+silently ignored and a failed insert corrupted the caller's own transaction
+instead of an isolated one. It surfaced as Hibernate refusing to flush a
+transient entity with a null identifier: a confusing symptom for a bug the
+codebase's own documentation had already named as a risk elsewhere. The fix
+was to make the mistake structurally impossible: the class exposes only the
+`@Transactional` method, and every caller — necessarily a different bean —
+must catch the conflict itself.
+
 ### Known gaps, deliberate
 
 - **Accounts are auto-created on first reference.** A bank does not open an
   account because a stranger sent money to it. The production shape is a rule
   that rejects an unknown creditor account plus an onboarding path.
-- **No available-funds check**, so no overdraft protection — see the isolation
-  note above for what that would change.
 - **No business-date calendar** — R08 is a window check, not a settlement
   calendar.
 

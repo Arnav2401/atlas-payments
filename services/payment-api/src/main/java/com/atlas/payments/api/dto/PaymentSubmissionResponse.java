@@ -49,6 +49,17 @@ public record PaymentSubmissionResponse(
         return new PaymentSubmissionResponse(truncate(endToEndId), Status.REJECTED, null, details);
     }
 
+    /**
+     * A rejection decided by the ledger rather than by the rule set — the rules
+     * cannot see account state, so this arrives after validation passed.
+     */
+    public static PaymentSubmissionResponse rejectedByLedger(
+            String endToEndId, String code, String field, String message) {
+        return new PaymentSubmissionResponse(
+                truncate(endToEndId), Status.REJECTED, null,
+                List.of(new RejectionDetail(code, field, message)));
+    }
+
     private static String truncate(String value) {
         if (value == null) {
             return null;

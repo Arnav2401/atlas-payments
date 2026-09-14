@@ -2,6 +2,7 @@ package com.atlas.payments.api;
 
 import com.atlas.payments.api.dto.PaymentInstructionRequest;
 import com.atlas.payments.api.dto.PaymentSubmissionResponse;
+import com.atlas.payments.ledger.InsufficientFundsException;
 import com.atlas.payments.persistence.PaymentStore;
 import com.atlas.payments.persistence.StoredPayment;
 import com.atlas.payments.validation.PaymentValidator;
@@ -68,9 +69,21 @@ public class PaymentController {
         // compiling rather than silently falling through.
         return switch (validator.validate(request)) {
             case ValidationOutcome.Accepted accepted -> {
-                StoredPayment stored = paymentStore.record(accepted.instruction(), idempotencyKey);
-                yield ResponseEntity.ok(PaymentSubmissionResponse.accepted(
-                        accepted.instruction().endToEndId(), stored.paymentId()));
+                try {
+                    StoredPayment stored = paymentStore.record(accepted.instruction(), idempotencyKey);
+                    yield ResponseEntity.ok(PaymentSubmissionResponse.accepted(
+                            accepted.instruction().endToEndId(), stored.paymentId()));
+                } catch (InsufficientFundsException insufficient) {
+                    // A payment can pass all ten rules and still be refused by
+                    // the ledger, because the rules cannot see account state.
+                    // Same envelope as a validation rejection: the service
+                    // produced a decision, and the decision is the payload.
+                    yield ResponseEntity.ok(PaymentSubmissionResponse.rejectedByLedger(
+                            accepted.instruction().endToEndId(),
+                            InsufficientFundsException.CODE,
+                            "debtorAccount",
+                            insufficient.getMessage()));
+                }
             }
             case ValidationOutcome.Rejected rejected -> ResponseEntity.ok(
                     PaymentSubmissionResponse.rejected(request.endToEndId(), rejected.reasons()));
