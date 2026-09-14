@@ -23,6 +23,22 @@ spring:
     # below, which has NO default, deliberately — that one actually is
     # security-critical, since anyone who can read it can forge a valid token.
     password: ${ATLAS_DB_PASSWORD:atlas}
+    hikari:
+      # Spring Boot's own default (10) is what shipped here through M1-M4,
+      # and it held up fine under every test in this repo — until the first
+      # k6 run in load-test/payments-load-test.js at 20 concurrent VUs, which
+      # made 1% of requests fail with a 30s HikariPool timeout. The pool's own
+      # exception said exactly why: "active=10, idle=0, waiting=18" — every
+      # connection in use, 18 requests queued behind them, some unlucky
+      # enough to still be waiting when Hikari's 30s connectionTimeout fired.
+      # open-in-view is already false (see below), so a connection is held
+      # only for the ledger write + outbox insert inside PaymentStore.record's
+      # own @Transactional method, not for the synchronous fraud-service HTTP
+      # call after it — this is purely "the pool's concurrency ceiling is
+      # lower than the offered load," not a leak. 20 is not a formula, it is
+      # this repo's own load test's own VU count made explicit, so the two
+      # numbers are no longer coincidentally different by luck of one k6 run.
+      maximum-pool-size: 20
 
   jpa:
     hibernate:
@@ -110,6 +126,11 @@ atlas:
     # contrast. Generate one with: openssl rand -base64 32
     jwt-secret: ${ATLAS_JWT_SECRET}
     token-ttl-minutes: ${ATLAS_JWT_TTL_MINUTES:15}
+  ops-console:
+    # Defaults cover both the Vite dev server (5173) and the docker-compose
+    # service (3002) - see SecurityConfig.corsConfigurationSource for why
+    # this is a short allowlist rather than "*".
+    allowed-origins: ${ATLAS_OPS_CONSOLE_ORIGINS:http://localhost:5173,http://localhost:3002}
 
 resilience4j:
   circuitbreaker:
