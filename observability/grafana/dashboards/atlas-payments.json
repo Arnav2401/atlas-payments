@@ -1,0 +1,184 @@
+{
+  "title": "atlas-payments",
+  "uid": "atlas-payments",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Payment decision throughput, by outcome",
+      "description": "atlas_payments_decisions_total \u2014 the only place a rejection is visible at all, since DECISION 1 returns every rejection on HTTP 200. A status-code panel here would show a healthy service through an outage; this is the panel that actually would not.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(atlas_payments_decisions_total[1m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "piechart",
+      "title": "Decision outcome mix (last 15m)",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (increase(atlas_payments_decisions_total[15m]))",
+          "legendFormat": "{{outcome}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Fraud assessment source \u2014 MODEL vs FALLBACK_RULES",
+      "description": "A spike in FALLBACK_RULES is the signal the fraud service (or the circuit breaker protecting the call to it) is down \u2014 see RestFraudClient and ConservativeRuleFallback. This panel is the operational answer to 'is the fraud model actually running right now'.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "sum by (source) (rate(atlas_payments_fraud_assessments_total[1m]))",
+          "legendFormat": "{{source}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Flagged rate (last 15m)",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "(sum(increase(atlas_payments_fraud_assessments_total{flagged=\"true\"}[15m])) or vector(0)) / sum(increase(atlas_payments_fraud_assessments_total[15m]))",
+          "refId": "A"
+        }
+      ],
+      "description": "or vector(0) on the numerator: Prometheus returns an empty result (not zero) for a label combination that has never occurred, e.g. flagged=\"true\" before any payment has ever been flagged - without the fallback this panel would show 'No data' instead of the more honest 0%."
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "POST /payments latency \u2014 p50 / p95 / p99",
+      "description": "Server-side processing time, via Prometheus's own histogram_quantile() over http_server_requests_seconds \u2014 computed here because Micrometer's client-side percentiles cannot be correctly aggregated across instances the way histogram buckets can (see application.yaml's percentiles-histogram setting). This is a different measurement point from k6's client-observed round trip in the README's load-test table; the two are not expected to match exactly.",
+      "gridPos": {
+        "h": 9,
+        "w": 18,
+        "x": 0,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/payments\"}[1m])))",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/payments\"}[1m])))",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_server_requests_seconds_bucket{uri=\"/payments\"}[1m])))",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Circuit breaker state \u2014 fraud-service",
+      "description": "resilience4j_circuitbreaker_state \u2014 0/1 per state label. A 1 on the 'open' series means every payment is currently on the conservative rule fallback, not the model.",
+      "gridPos": {
+        "h": 7,
+        "w": 6,
+        "x": 18,
+        "y": 16
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "expr": "resilience4j_circuitbreaker_state{name=\"fraud-service\",state=\"open\"}",
+          "legendFormat": "open",
+          "refId": "A"
+        }
+      ]
+    }
+  ]
+}

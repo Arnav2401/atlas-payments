@@ -1,0 +1,15 @@
+# A 5s scrape interval, shorter than Prometheus's own 15s-60s default range —
+# deliberate, for a demo/dev environment where you want a k6 load test's
+# effect on the Grafana dashboard visible within seconds, not minutes. A real
+# production deployment would widen this; it costs nothing here and buys
+# responsiveness while working the system live.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: payment-api
+    metrics_path: /actuator/prometheus
+    static_configs:
+      # The compose service name, not localhost - Prometheus runs as its own
+      # container on the same compose network.
+      - targets: ["payment-api:8080"]

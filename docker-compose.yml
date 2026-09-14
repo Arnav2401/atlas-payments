@@ -5,8 +5,9 @@ services:
     environment:
       POSTGRES_DB: atlas
       POSTGRES_USER: atlas
-      # Local development only. M5 moves every secret to environment variables
-      # supplied at run time and adds a scanner to CI.
+      # Local development only. See atlas.security.jwt-secret below for the
+      # contrast — that one is actually security-critical and has no default
+      # anywhere, in code or here.
       POSTGRES_PASSWORD: atlas
     ports:
       - "5432:5432"
@@ -17,10 +18,7 @@ services:
       # subdirectory below it (see the docker-library/postgres image's own
       # startup message). Mounting at the old sub-path here made the
       # container refuse to start against a pre-18-shaped volume — caught
-      # only once `docker compose up` was actually run end-to-end, not by
-      # `docker pull` or any of the earlier ad-hoc `docker run` containers
-      # used for M2's tests, which never exercised the compose file's own
-      # volume mount at all.
+      # only once `docker compose up` was actually run end-to-end.
       - atlas-pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
@@ -51,11 +49,30 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      # Two listeners, advertised differently depending on who is asking —
+      # not one, which is the bug this replaced. PLAINTEXT (9092) is for
+      # whoever reaches Kafka from the HOST machine (a local test script,
+      # kafka-console-consumer run from your own terminal); INTERNAL (29092)
+      # is for other containers on this compose network (fraud-service,
+      # payment-api).
+      #
+      # The bug, found by actually running payment-api against this compose
+      # file for the first time rather than assuming it worked: with a
+      # single PLAINTEXT listener advertised as `localhost:9092`, Kafka's
+      # metadata response tells EVERY client — including one running inside
+      # another container — "reconnect to localhost:9092". From inside the
+      # payment-api container, `localhost` is payment-api's own network
+      # namespace, not Kafka's, so every request after the initial bootstrap
+      # failed silently in the background. It never surfaced during M4
+      # development because every manual test either ran on the host
+      # (where `localhost:9092` genuinely reaches the port-mapped
+      # container) or used `docker exec` directly inside the Kafka container
+      # itself — neither path exercises container-to-container traffic.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -79,7 +96,10 @@ services:
         condition: service_healthy
     environment:
       FRAUD_REDIS_URL: redis://redis:6379/0
-      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # kafka:29092, not :9092 - the INTERNAL (container-to-container)
+      # listener. See the kafka service's own comment above for why the two
+      # are not interchangeable.
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
     ports:
       - "8001:8001"
     healthcheck:
@@ -87,6 +107,83 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  payment-api:
+    build:
+      context: .
+      dockerfile: services/payment-api/Dockerfile
+    container_name: atlas-payment-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      fraud-service:
+        condition: service_healthy
+    environment:
+      ATLAS_DB_URL: jdbc:postgresql://postgres:5432/atlas
+      ATLAS_DB_USER: atlas
+      ATLAS_DB_PASSWORD: atlas
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      ATLAS_FRAUD_SERVICE_URL: http://fraud-service:8001
+      # No default in application.yaml, and none here either — .env.example
+      # documents generating a real one. docker-compose reads a .env file at
+      # the repo root automatically if present; .env itself is gitignored.
+      ATLAS_JWT_SECRET: ${ATLAS_JWT_SECRET}
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+      start_period: 20s
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: atlas-prometheus
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      payment-api:
+        condition: service_healthy
+
+  ops-console:
+    build:
+      context: ./ops-console
+      args:
+        # Baked into the static bundle at build time (see the Dockerfile's own
+        # comment on why this can't be a runtime `environment:` entry like
+        # every other service here gets) - localhost:8080, not
+        # payment-api:8080, because this URL is fetched by the viewer's own
+        # browser on the host, which cannot resolve compose's internal
+        # service DNS names at all.
+        VITE_API_BASE_URL: http://localhost:8080
+    container_name: atlas-ops-console
+    ports:
+      - "3002:80"
+    depends_on:
+      payment-api:
+        condition: service_healthy
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: atlas-grafana
+    environment:
+      # Local demo only - not exposed outside this compose network by
+      # default, and changed on first login by Grafana itself if it were.
+      GF_SECURITY_ADMIN_PASSWORD: atlas-demo
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3001:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   atlas-pgdata:

@@ -19,11 +19,20 @@ RUN pip install --no-cache-dir uv
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev
+# --no-install-project here: `uv sync` normally also builds and installs the
+# local fraud_service package itself (see [tool.hatch.build.targets.wheel]
+# in pyproject.toml), but src/ has not been copied in yet at this point -
+# only pyproject.toml and uv.lock, so third-party dependencies can be
+# resolved and cached in their own layer, invalidated only when those files
+# change, not on every source edit. The project itself is installed by the
+# second `uv sync` below, once src/ actually exists - fast, since all
+# dependencies are already present in .venv.
+RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src/ src/
 COPY training/ training/
 COPY models/ models/
+RUN uv sync --frozen --no-dev
 
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8001

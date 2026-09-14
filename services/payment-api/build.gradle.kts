@@ -18,6 +18,16 @@ repositories {
     mavenCentral()
 }
 
+// This is an application, not a library nothing else depends on as a jar -
+// the plain (non-executable) jar the `java` plugin produces alongside
+// bootJar exists for library consumers, which this project has none of.
+// Disabling it means `build/libs/*.jar` is unambiguous, which is what
+// Dockerfile's COPY step relies on rather than hardcoding a version string
+// that would go stale the moment `version` above changes.
+tasks.named<Jar>("jar") {
+    enabled = false
+}
+
 dependencies {
     implementation("org.springframework.boot:spring-boot-starter-web")
 
