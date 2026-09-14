@@ -2,13 +2,14 @@ import { useCallback, useEffect, useState } from "react";
 import {
   ApiRequestError,
   getPayment,
+  getRings,
   listPayments,
   login,
   postDecisionAction,
   roleFromToken,
   type DecisionAction,
 } from "./api";
-import type { PaymentSummary, Role } from "./types";
+import type { PaymentSummary, RingCandidate, Role } from "./types";
 import "./index.css";
 
 interface Session {
@@ -183,7 +184,88 @@ function PaymentDetail({
   );
 }
 
+function FraudRingsView({ session }: { session: Session }) {
+  const [rings, setRings] = useState<RingCandidate[] | null>(null);
+  const [enabled, setEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await getRings(session.token);
+      setEnabled(response.enabled);
+      setRings(response.candidates);
+    } catch (e) {
+      setError(e instanceof ApiRequestError ? `Failed to load fraud rings: ${e.code}` : "Failed to load fraud rings");
+    } finally {
+      setLoading(false);
+    }
+  }, [session.token]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  return (
+    <div className="rings-pane">
+      <div className="list-header">
+        <h2>M6 — suspected fraud rings</h2>
+        <button className="link-button" onClick={refresh} disabled={loading}>
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      </div>
+      <p className="hint">
+        Accounts ranked by in-degree concentrated into a short time window — Louvain community + degree
+        centrality, computed offline over the counterparty graph (see the README's M6 section). A row marked
+        PLANTED is one of the synthetic rings deliberately seeded to prove this ranking actually finds them,
+        not a real one.
+      </p>
+
+      {error && <p className="error">{error}</p>}
+
+      {!loading && !enabled && (
+        <p className="hint">
+          Graph features are not enabled on the fraud service (no Neo4j configured) — this is optional M6
+          scope, off by default. See the README for how to turn it on.
+        </p>
+      )}
+
+      {!loading && enabled && rings && rings.length === 0 && <p className="hint">No suspicious accounts found.</p>}
+
+      {!loading && enabled && rings && rings.length > 0 && (
+        <table className="shap-table">
+          <thead>
+            <tr>
+              <th>Account</th>
+              <th>Community</th>
+              <th>In-degree</th>
+              <th>Spread (h)</th>
+              <th>Score</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rings.map((r) => (
+              <tr key={r.accountId}>
+                <td>{r.accountId}</td>
+                <td>{r.community}</td>
+                <td>{r.inDegree}</td>
+                <td>{r.temporalSpreadHours}</td>
+                <td>{r.suspicionScore.toFixed(2)}</td>
+                <td>{r.planted && <span className="badge badge-flagged">PLANTED</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 function Console({ session, onLogout }: { session: Session; onLogout: () => void }) {
+  const [tab, setTab] = useState<"payments" | "rings">("payments");
   const [payments, setPayments] = useState<PaymentSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -247,12 +329,24 @@ function Console({ session, onLogout }: { session: Session; onLogout: () => void
         </div>
       </header>
 
+      <nav className="tabs">
+        <button className={tab === "payments" ? "tab-active" : ""} onClick={() => setTab("payments")}>
+          Payments
+        </button>
+        <button className={tab === "rings" ? "tab-active" : ""} onClick={() => setTab("rings")}>
+          Fraud rings
+        </button>
+      </nav>
+
       {banner && (
         <div className="banner" onClick={() => setBanner(null)}>
           {banner}
         </div>
       )}
 
+      {tab === "rings" && <FraudRingsView session={session} />}
+
+      {tab === "payments" && (
       <div className="layout">
         <div className="list-pane">
           <div className="list-header">
@@ -297,6 +391,7 @@ function Console({ session, onLogout }: { session: Session; onLogout: () => void
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

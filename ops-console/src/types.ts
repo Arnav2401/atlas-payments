@@ -39,3 +39,21 @@ export interface ApiError {
   code: string;
   message: string;
 }
+
+// Mirrors RingsController.RingsResponse (payment-api) exactly. `enabled:
+// false` means the fraud service has no Neo4j configured (M6 is optional) -
+// distinct from an empty candidate list, which would mean "checked, found
+// nothing suspicious".
+export interface RingCandidate {
+  accountId: string;
+  community: number;
+  inDegree: number;
+  temporalSpreadHours: number;
+  suspicionScore: number;
+  planted: boolean;
+}
+
+export interface RingsResponse {
+  enabled: boolean;
+  candidates: RingCandidate[];
+}

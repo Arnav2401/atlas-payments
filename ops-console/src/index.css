@@ -156,11 +156,32 @@ header h1 {
 }
 
 .list-pane,
-.detail-pane {
+.detail-pane,
+.rings-pane {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px;
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tabs button {
+  background: none;
+  color: var(--muted);
+  border-radius: 0;
+  padding: 8px 14px;
+  border-bottom: 2px solid transparent;
+}
+
+.tabs button.tab-active {
+  color: var(--text);
+  border-bottom: 2px solid var(--accent);
 }
 
 .list-header {

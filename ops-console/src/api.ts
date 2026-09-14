@@ -1,4 +1,4 @@
-import type { ApiError, AuthResponse, PaymentSummary, Role } from "./types";
+import type { ApiError, AuthResponse, PaymentSummary, RingsResponse, Role } from "./types";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8080";
 
@@ -62,6 +62,10 @@ export async function postDecisionAction(
   action: DecisionAction,
 ): Promise<void> {
   return request<void>(`/payments/${paymentId}/${action}`, token, { method: "POST" });
+}
+
+export async function getRings(token: string, topK = 15): Promise<RingsResponse> {
+  return request<RingsResponse>(`/rings?topK=${topK}`, token);
 }
 
 // Client-side only, and not a security boundary - it exists purely to decide
