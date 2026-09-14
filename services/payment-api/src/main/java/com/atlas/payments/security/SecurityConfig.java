@@ -1,5 +1,6 @@
 package com.atlas.payments.security;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -14,6 +15,9 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.web.cors.CorsConfiguration;
+import org.springframework.web.cors.CorsConfigurationSource;
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 
 import java.util.Collection;
 import java.util.List;
@@ -37,10 +41,25 @@ import java.util.List;
 @EnableMethodSecurity
 public class SecurityConfig {
 
+    // The ops console (ops-console/) is a browser SPA on its own origin -
+    // localhost:5173 from `npm run dev`, localhost:3002 from the
+    // docker-compose service - calling this API directly with fetch().
+    // Unlike a same-origin request, the browser enforces CORS on the
+    // response before any JS here ever sees it, so without this the
+    // console's requests fail before the JWT check even runs. A short
+    // explicit allowlist, not "*": a wildcard would also have to drop
+    // credentialed requests (Authorization headers) to stay spec-legal,
+    // which defeats the point.
+    // Spring's own conversion service splits a comma-separated property
+    // string into a List<String> here - no SpEL needed.
+    @Value("${atlas.ops-console.allowed-origins:http://localhost:5173,http://localhost:3002}")
+    private List<String> opsConsoleOrigins;
+
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http, JwtDecoder jwtDecoder) throws Exception {
         http
                 .csrf(csrf -> csrf.disable())
+                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
                 .authorizeHttpRequests(authorize -> authorize
                         .requestMatchers("/auth/token").permitAll()
@@ -59,6 +78,17 @@ public class SecurityConfig {
                                 .jwtAuthenticationConverter(jwtAuthenticationConverter())));
 
         return http.build();
+    }
+
+    @Bean
+    public CorsConfigurationSource corsConfigurationSource() {
+        CorsConfiguration configuration = new CorsConfiguration();
+        configuration.setAllowedOrigins(opsConsoleOrigins);
+        configuration.setAllowedMethods(List.of("GET", "POST"));
+        configuration.setAllowedHeaders(List.of("Authorization", "Content-Type", "Idempotency-Key"));
+        UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
+        source.registerCorsConfiguration("/**", configuration);
+        return source;
     }
 
     @Bean
