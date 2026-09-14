@@ -11,17 +11,24 @@ from fraud_service.features.engineering import FeatureEngineer
 from fraud_service.features.history import AccountHistory
 from fraud_service.features.velocity import VelocityFeatures
 from fraud_service.model.predictor import FraudPredictor
+from fraud_service.scoring import ScoringService
 from fastapi import FastAPI
 
 
 def _build_app(model_dir: Path) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
-    app.state.predictor = FraudPredictor(model_dir)
+    predictor = FraudPredictor(model_dir)
     redis_client = fakeredis.FakeStrictRedis(decode_responses=True)
-    app.state.feature_engineer = FeatureEngineer(
-        velocity=VelocityFeatures(redis_client), history=AccountHistory(redis_client)
-    )
+    engineer = FeatureEngineer(velocity=VelocityFeatures(redis_client), history=AccountHistory(redis_client))
+    # The route reads app.state.scoring_service (see routes.py) - the same
+    # object main.py's lifespan builds and shares with the Kafka consumer.
+    app.state.scoring_service = ScoringService(engineer=engineer, predictor=predictor)
+    # Also exposed directly, test-only: production code never reads this -
+    # it exists so tests can inspect Redis state white-box (see
+    # test_a_second_call_sees_the_first_as_prior_velocity below) without
+    # reaching into ScoringService's private fields.
+    app.state.feature_engineer = engineer
     return app
 
 

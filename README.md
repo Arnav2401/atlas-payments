@@ -9,7 +9,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M3 core complete — explainable fraud scoring (XGBoost + SHAP) behind a circuit breaker, with a conservative rule fallback proven live. 133 Java tests, 8 Python tests passing.
+**Status:** M4 core complete — transactional outbox, KRaft-mode Kafka, an idempotent async decisioning pipeline, and a dead-letter queue, all proven live against a real broker, not just in tests. 139 Java tests, 11 Python tests passing.
 
 ## A note on ISO 20022
 
@@ -397,6 +397,133 @@ has `isCashOut=false` — atlas-payments has no cash-withdrawal concept, so it
 only ever exercises the TRANSFER half of the population the model was trained
 on. The CASH_OUT-specific behaviour the model learned is never exercised by
 this system's real traffic.
+
+## The transactional outbox and Kafka
+
+**The dual-write problem:** commit the payment to Postgres, then publish to
+Kafka as a second, independent operation, and a crash between the two leaves a
+payment in the ledger that nothing downstream ever saw. Money moved and
+nobody screened it.
+
+**The fix:** `LedgerWriter.write` writes an `outbox` row in the *same*
+transaction as the ledger entry — the event's durability is the ledger
+entry's durability, because they are the same commit. `OutboxPoller` is a
+separate, `@Scheduled` process that reads undispatched rows, publishes to
+Kafka, and marks them dispatched — atomicity where it is needed, asynchrony
+where it is wanted.
+
+```
+POST /payments → ledger write + outbox row (one transaction)
+                        ↓
+                 OutboxPoller (polls every 500ms)
+                        ↓
+              Kafka: payments.submitted  (KRaft, single broker, no ZooKeeper)
+                        ↓
+       fraud-service's Kafka consumer (same ScoringService the /score
+       HTTP endpoint uses — one implementation, two callers)
+                        ↓
+              Kafka: payments.decisioned  (+ payments.dlq for poison messages)
+                        ↓
+       PaymentDecisionConsumer → payment_decisions (idempotent on payment_id)
+```
+
+**Why this runs alongside, not instead of, M3's synchronous HTTP call
+(DECISION 4):** the synchronous path gives the API caller an immediate,
+in-response verdict; this pipeline gives a durable, replayable, at-least-once
+decisioning trail that survives the fraud service being down for an extended
+period. Both call the identical `ScoringService`. One real consequence worth
+naming: because Redis velocity state advances between the two calls, **the
+two scores for the same payment can genuinely differ** — verified live, not
+theorised: a payment scored 1.51e-05 synchronously and 1.94e-05 a few hundred
+milliseconds later on the async path, because the account's own prior
+transaction had already landed in Redis by the second scoring.
+
+### At-least-once, not exactly-once — and what that forces downstream
+
+Delivery is at-least-once on **both** hops of this pipeline, and it is
+inherent to the pattern, not a bug to fix later:
+
+- **Outbox → `payments.submitted`.** Publishing to Kafka and marking a row
+  dispatched cannot be one atomic operation — they are two different systems.
+  A crash after Kafka acknowledges the send but before the mark commits
+  republishes the row on the next poll.
+- **Fraud service → `payments.decisioned`.** The same gap, one hop later: a
+  crash after publishing a decision but before committing the consumed Kafka
+  offset causes a redelivery.
+
+What the outbox pattern *does* fully close is the failure the brief names
+specifically — crash between the ledger commit and any publish attempt at
+all. That window has no duplicate risk, because nothing was ever sent.
+Restart, and the still-durable row gets published for the first time. Losing
+an event and duplicating one are different failure modes with different
+fixes; this system closes the first outright and makes the second harmless
+rather than pretending to close it too.
+
+**Made harmless by:** `PaymentDecisionConsumer` attempts the insert into
+`payment_decisions` rather than checking first, and lets `UNIQUE(payment_id)`
+decide — the exact idempotency shape M2 uses for the ledger's own submission
+key, applied a third time to a third kind of race. This is also the complete
+answer to "how do you avoid double-processing on a rebalance": it does not
+try to avoid seeing a message twice — a rebalance can always hand the same
+message to two consumers — it makes seeing it twice produce one row.
+
+### The failure test
+
+> Kill the process between the ledger commit and the publish, restart, and
+> prove the payment still reaches the fraud service.
+
+`OutboxKafkaIntegrationTest.killing_the_process_between_commit_and_publish_does_not_lose_the_payment`
+proves it against real PostgreSQL and a real, single-broker, KRaft-mode Kafka
+(`org.testcontainers.kafka.KafkaContainer`, wrapping the `apache/kafka` image
+directly — no ZooKeeper, no Confluent wrapper). "Kill the process" means: the
+ledger transaction commits and the poller is never told about it — assert
+directly against Postgres that the row is durable and genuinely unpublished.
+"Restart" is a fresh `poller.poll()` call, legitimate because the poller
+carries no in-memory state of its own; everything it needs to recover is
+already sitting in the row the test just proved survived. A literal `kill -9`
+would prove the same property through more infrastructure without testing
+anything a JVM crash does differently.
+
+### Dead-letter queue
+
+A poison message — malformed JSON, or a processing exception — is retried
+twice (1s apart) then published verbatim to `payments.dlq` (headers carry the
+original topic, offset, and failure reason) and the offset is committed, so
+one bad message cannot block every message behind it in the partition
+forever. **Replay:** fix whatever made it unprocessable, then republish its
+value to `payments.decisioned` — no consumer restart needed, since the
+consumer is idempotent on `payment_id` and a replay is handled the same way
+any other redelivery is. Proven live: a message published directly to
+`payments.decisioned` as literal garbage (`{ this is not valid json`) landed
+on `payments.dlq` within seconds, and the running `payment-api` process never
+stopped serving requests throughout.
+
+### Two real bugs, found by running the real pipeline, not by testing each side alone
+
+Every unit and integration test on both sides passed while the live pipeline
+was silently broken. Both were caught only by submitting a real payment
+through the real, fully-wired system and checking Postgres for the actual
+row — treating green tests as a reason to verify, not a reason to stop.
+
+1. **A schema mismatch that routed every real decision to the DLQ.** The
+   Python producer always published a `threshold` field;
+   `PaymentDecisionedEvent.java` never declared it. With
+   `fail-on-unknown-properties: true` (set deliberately back in M1, for
+   exactly this class of mistake), every real message failed to deserialise,
+   retried twice, and landed on `payments.dlq` — while every test stayed
+   green, because every test built the event in Java and serialised *that*,
+   which can never disagree with the record's own fields. Fixed by adding
+   the field, and by adding a regression test
+   (`deserialises_a_literal_payload_matching_the_python_services_actual_schema`)
+   built from a JSON string copied verbatim from the Python source, not
+   round-tripped through the Java type at all.
+2. **A topic-creation race on the Python side.** The Java side declares its
+   three topics as `NewTopic` beans, which Spring Boot's `KafkaAdmin` creates
+   at startup before anything else touches the broker. Python had no
+   equivalent and relied on Kafka's auto-create-on-first-publish behaviour,
+   which is a genuine race — `admin.create_topics` is now called explicitly
+   for all three topics before the consumer starts, matching the Java side's
+   approach rather than trusting broker timing.
 
 ## Metrics
 

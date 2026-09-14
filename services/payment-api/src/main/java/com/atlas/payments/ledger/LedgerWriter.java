@@ -1,6 +1,11 @@
 package com.atlas.payments.ledger;
 
 import com.atlas.payments.domain.PaymentInstruction;
+import com.atlas.payments.outbox.OutboxEntity;
+import com.atlas.payments.outbox.OutboxRepository;
+import com.atlas.payments.outbox.PaymentSubmittedEvent;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Propagation;
@@ -30,17 +35,23 @@ public class LedgerWriter {
     private final AccountProvisioner accountProvisioner;
     private final JournalEntryRepository journalEntries;
     private final PaymentSubmissionRepository submissions;
+    private final OutboxRepository outbox;
+    private final ObjectMapper objectMapper;
     private final Clock clock;
 
     public LedgerWriter(AccountRepository accounts,
                         AccountProvisioner accountProvisioner,
                         JournalEntryRepository journalEntries,
                         PaymentSubmissionRepository submissions,
+                        OutboxRepository outbox,
+                        ObjectMapper objectMapper,
                         Clock clock) {
         this.accounts = accounts;
         this.accountProvisioner = accountProvisioner;
         this.journalEntries = journalEntries;
         this.submissions = submissions;
+        this.outbox = outbox;
+        this.objectMapper = objectMapper;
         this.clock = clock;
     }
 
@@ -126,7 +137,56 @@ public class LedgerWriter {
         PaymentSubmissionEntity submission = submissions.save(new PaymentSubmissionEntity(
                 idempotencyKey, RequestFingerprint.of(instruction), entry, now));
 
+        writeOutboxEvent(entry, instruction, currencyCode, debtorBalanceBeforeMinor, creditorBalanceBeforeMinor, now);
+
         return new LedgerWriteResult(submission, debtorBalanceBeforeMinor, creditorBalanceBeforeMinor);
+    }
+
+    /**
+     * The dual-write problem, and the entire fix for it, in one method.
+     *
+     * <p>The problem: commit the payment to Postgres, then publish to Kafka as
+     * a second, independent operation, and a crash between the two leaves a
+     * payment in the ledger that nothing downstream — fraud scoring,
+     * anything — ever saw. Money moved and nobody screened it.
+     *
+     * <p>The fix is that this method does not talk to Kafka at all. It writes
+     * a row to the {@code outbox} table, in this same {@code REQUIRES_NEW}
+     * transaction, which means the event's existence is exactly as durable as
+     * the journal entry it describes — one commit, not two operations with a
+     * gap between them. {@link com.atlas.payments.outbox.OutboxPoller} is the
+     * separate, asynchronous process that actually reaches Kafka, on its own
+     * schedule, reading rows this method has already made durable. Atomicity
+     * where it is needed (this write); asynchrony where it is wanted (the
+     * publish).
+     */
+    private void writeOutboxEvent(JournalEntryEntity entry, PaymentInstruction instruction, String currencyCode,
+                                  long debtorBalanceBeforeMinor, long creditorBalanceBeforeMinor, Instant now) {
+        var currency = instruction.instructedCurrency();
+        var event = new PaymentSubmittedEvent(
+                entry.getExternalId().toString(),
+                instruction.endToEndId(),
+                instruction.instructedAmount(),
+                false, // see FraudAssessmentRequest#isCashOut's javadoc for this scoping limitation
+                instruction.debtorAccount(),
+                instruction.creditorAccount(),
+                Money.fromMinorUnits(debtorBalanceBeforeMinor, currency),
+                Money.fromMinorUnits(creditorBalanceBeforeMinor, currency),
+                now.atZone(java.time.ZoneOffset.UTC).getHour());
+
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(event);
+        } catch (JsonProcessingException impossible) {
+            // A record of primitives, a BigDecimal and a String cannot fail to
+            // serialise. If this ever throws, it means the event shape grew a
+            // field Jackson genuinely cannot handle, which is a bug to fix, not
+            // a runtime condition to recover from - hence unchecked, not a
+            // caught-and-logged path that would silently drop the event.
+            throw new IllegalStateException("PaymentSubmittedEvent must always be serialisable", impossible);
+        }
+
+        outbox.save(new OutboxEntity(entry.getExternalId(), PaymentSubmittedEvent.TOPIC, payload, now));
     }
 
     /**

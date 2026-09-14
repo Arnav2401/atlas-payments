@@ -39,6 +39,32 @@ services:
       timeout: 3s
       retries: 10
 
+  # KRaft mode, single broker, no ZooKeeper - the apache/kafka image runs
+  # Kafka's own consensus (KRaft) rather than depending on a second
+  # coordination service, which is what keeps this to one container instead
+  # of two for a build at this scale.
+  kafka:
+    image: apache/kafka:latest
+    container_name: atlas-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   fraud-service:
     build: services/fraud-service
     container_name: atlas-fraud-service
@@ -49,8 +75,11 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      kafka:
+        condition: service_healthy
     environment:
       FRAUD_REDIS_URL: redis://redis:6379/0
+      ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
     ports:
       - "8001:8001"
     healthcheck:

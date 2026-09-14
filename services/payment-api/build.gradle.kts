@@ -33,10 +33,18 @@ dependencies {
     implementation("org.springframework.boot:spring-boot-starter-aop") // required for @CircuitBreaker's AOP proxy
     implementation("io.github.resilience4j:resilience4j-spring-boot3:2.4.0")
 
+    // M4 — transactional outbox + Kafka. Version managed by Spring Boot's
+    // dependency-management BOM (already applied), not pinned here, the same
+    // way spring-boot-starter-data-jpa's Hibernate version isn't pinned —
+    // this is the version Boot 3.5.16 was actually tested against.
+    implementation("org.springframework.kafka:spring-kafka")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.testcontainers:postgresql")
+    testImplementation("org.testcontainers:kafka")
+    testImplementation("org.springframework.kafka:spring-kafka-test")
     // Note: the com.github.tomakehurst:wiremock-jre8 coordinate stopped at
     // 3.0.1; the project moved to org.wiremock:* from 3.x onward. The plain
     // "wiremock" artifact does not bundle a Jetty server implementation and
