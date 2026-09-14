@@ -29,6 +29,10 @@ def _build_app(model_dir: Path) -> FastAPI:
     # test_a_second_call_sees_the_first_as_prior_velocity below) without
     # reaching into ScoringService's private fields.
     app.state.feature_engineer = engineer
+    # Mirrors main.py's lifespan when ATLAS_NEO4J_URI is unset (see
+    # config.py) - GET /rings must degrade cleanly, not KeyError, when this
+    # test app (like most of this test suite) never configures Neo4j at all.
+    app.state.neo4j_driver = None
     return app
 
 
@@ -103,3 +107,19 @@ def test_rejects_an_hour_of_day_outside_0_23(tiny_model_dir: Path) -> None:
     response = client.post("/score", json=_valid_payload(hour_of_day=24))
 
     assert response.status_code == 422
+
+
+def test_rings_reports_disabled_when_neo4j_is_not_configured(tiny_model_dir: Path) -> None:
+    """The M6-optional analogue of the Kafka consumer's own optional-startup
+    behaviour (see main.py's lifespan): most of this test suite, like most
+    real deployments without M6 enabled, never configures Neo4j at all, and
+    GET /rings must say so explicitly rather than error or silently lie
+    about being enabled.
+    """
+    client = TestClient(_build_app(tiny_model_dir))
+
+    response = client.get("/rings")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {"enabled": False, "candidates": []}

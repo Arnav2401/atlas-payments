@@ -14,5 +14,12 @@ class Settings:
     # of the async path simply not starting. See main.py's lifespan.
     kafka_bootstrap_servers: str | None = os.environ.get("ATLAS_KAFKA_BOOTSTRAP_SERVERS")
 
+    # M6 (optional): same "unset means not running" shape as Kafka above,
+    # for the same reason — GET /rings must degrade to "graph features not
+    # enabled" rather than fail service startup when Neo4j isn't up.
+    neo4j_uri: str | None = os.environ.get("ATLAS_NEO4J_URI")
+    neo4j_user: str = os.environ.get("ATLAS_NEO4J_USER", "neo4j")
+    neo4j_password: str = os.environ.get("ATLAS_NEO4J_PASSWORD", "atlas-demo-password")
+
 
 settings = Settings()

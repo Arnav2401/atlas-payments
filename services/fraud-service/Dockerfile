@@ -31,6 +31,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 
 COPY src/ src/
 COPY training/ training/
+COPY graph/ graph/
 COPY models/ models/
 RUN uv sync --frozen --no-dev
 

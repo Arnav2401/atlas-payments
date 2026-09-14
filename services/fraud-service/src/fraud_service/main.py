@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 
 import redis
 from fastapi import FastAPI
+from neo4j import GraphDatabase
 
 from fraud_service.api.routes import router
 from fraud_service.config import settings
@@ -52,6 +53,18 @@ async def lifespan(app: FastAPI):
         logger.warning("ATLAS_KAFKA_BOOTSTRAP_SERVERS not set - the async (payments.submitted) path is NOT running; "
                         "only the synchronous /score endpoint is available")
 
+    # M6 (optional), same shape as the Kafka consumer above: unset means
+    # GET /rings serves an empty, explicitly-disabled response rather than
+    # failing service startup.
+    if settings.neo4j_uri:
+        app.state.neo4j_driver = GraphDatabase.driver(
+            settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)
+        )
+        logger.info("Neo4j driver connected against %s - GET /rings enabled", settings.neo4j_uri)
+    else:
+        app.state.neo4j_driver = None
+        logger.warning("ATLAS_NEO4J_URI not set - GET /rings will report graph features as disabled")
+
     yield
 
     if outbox_consumer is not None:
@@ -62,6 +75,8 @@ async def lifespan(app: FastAPI):
             await consumer_task
         except (asyncio.CancelledError, Exception):
             pass
+    if app.state.neo4j_driver is not None:
+        app.state.neo4j_driver.close()
 
 
 app = FastAPI(title="atlas-payments fraud service", lifespan=lifespan)

@@ -39,3 +39,17 @@ class ScoreResponse(BaseModel):
     threshold: float
     top_features: list[FeatureContributionResponse]
     source: str = "MODEL"
+
+
+class RingCandidateResponse(BaseModel):
+    account_id: str
+    community: int
+    in_degree: int
+    temporal_spread_hours: int
+    suspicion_score: float
+    planted: bool
+
+
+class RingsResponse(BaseModel):
+    enabled: bool
+    candidates: list[RingCandidateResponse]
