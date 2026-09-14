@@ -7,6 +7,7 @@ import com.atlas.payments.persistence.PaymentStore;
 import com.atlas.payments.persistence.StoredPayment;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
@@ -27,8 +28,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/** The HTTP contract: status codes, response shapes, and what never reaches the store. */
+/**
+ * The HTTP contract: status codes, response shapes, and what never reaches the
+ * store.
+ *
+ * <p>{@code addFilters = false} deliberately — this class is not about
+ * authentication, and M5 makes {@code POST /payments} require it (see
+ * SecurityConfig: authenticated by default, permitted only where explicitly
+ * named). Leaving Spring Security's filters active here would fail every
+ * request with 401 before it ever reached the validation/rejection logic this
+ * class exists to test, which is a different property from the one this class
+ * checks. The security boundary itself — no token, wrong role, right role —
+ * is {@code PaymentAuthorizationTest}'s job, against the real filter chain.
+ */
 @WebMvcTest(PaymentController.class)
+@AutoConfigureMockMvc(addFilters = false)
 @Import(ValidationConfig.class)
 class PaymentControllerTest {
 

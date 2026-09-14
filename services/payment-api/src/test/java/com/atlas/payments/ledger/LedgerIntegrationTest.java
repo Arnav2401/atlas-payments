@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.TestPropertySource;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -43,6 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * trigger, the version check and the insert race are all database behaviour.
  */
 @SpringBootTest
+@TestPropertySource(properties = "atlas.security.jwt-secret=" + com.atlas.payments.testing.TestSecurity.JWT_SECRET)
 @Testcontainers
 class LedgerIntegrationTest {
 

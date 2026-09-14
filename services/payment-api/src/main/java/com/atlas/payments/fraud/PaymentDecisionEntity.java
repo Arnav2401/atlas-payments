@@ -2,6 +2,8 @@ package com.atlas.payments.fraud;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
@@ -48,6 +50,18 @@ public class PaymentDecisionEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     private String rawPayload;
 
+    /**
+     * A flagged payment starts {@code UNDER_REVIEW} automatically — see the
+     * constructor — because a fraud model flagging a payment IS the request
+     * for review; an analyst does not need to separately ask for review on
+     * something the system already flagged. An unflagged payment starts
+     * {@code NONE}; {@code POST /payments/{id}/review} still lets an analyst
+     * pull an unflagged payment into review manually.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "review_status", nullable = false, length = 16)
+    private ReviewStatus reviewStatus;
+
     protected PaymentDecisionEntity() {
     }
 
@@ -59,6 +73,7 @@ public class PaymentDecisionEntity {
         this.probability = probability;
         this.decidedAt = decidedAt;
         this.rawPayload = rawPayload;
+        this.reviewStatus = flagged ? ReviewStatus.UNDER_REVIEW : ReviewStatus.NONE;
     }
 
     public UUID getPaymentId() {
@@ -79,5 +94,49 @@ public class PaymentDecisionEntity {
 
     public Instant getDecidedAt() {
         return decidedAt;
+    }
+
+    public ReviewStatus getReviewStatus() {
+        return reviewStatus;
+    }
+
+    public String getRawPayload() {
+        return rawPayload;
+    }
+
+    /**
+     * An analyst's action: pull this payment into review. Idempotent — moving
+     * an already-under-review payment to UNDER_REVIEW again is a no-op, not
+     * an error, since two analysts requesting review on the same payment is a
+     * normal race, not a conflict either of them needs to see.
+     *
+     * @throws IllegalStateException if the payment already has a supervisor's
+     *         terminal decision — review cannot un-resolve a resolved payment.
+     */
+    public void requestReview() {
+        if (reviewStatus == ReviewStatus.CLEARED || reviewStatus == ReviewStatus.ESCALATED) {
+            throw new ReviewConflictException(
+                    "payment " + paymentId + " is already resolved (" + reviewStatus + ") and cannot be reopened");
+        }
+        reviewStatus = ReviewStatus.UNDER_REVIEW;
+    }
+
+    /** A supervisor's action: this payment was legitimate. */
+    public void clear() {
+        assertResolvable("clear");
+        reviewStatus = ReviewStatus.CLEARED;
+    }
+
+    /** A supervisor's action: this payment needs action outside this system. */
+    public void escalate() {
+        assertResolvable("escalate");
+        reviewStatus = ReviewStatus.ESCALATED;
+    }
+
+    private void assertResolvable(String action) {
+        if (reviewStatus == ReviewStatus.CLEARED || reviewStatus == ReviewStatus.ESCALATED) {
+            throw new ReviewConflictException(
+                    "payment " + paymentId + " is already resolved (" + reviewStatus + ") and cannot " + action);
+        }
     }
 }

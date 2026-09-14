@@ -1,12 +1,15 @@
 package com.atlas.payments.api;
 
 import com.atlas.payments.api.dto.ApiError;
+import com.atlas.payments.fraud.PaymentNotFoundException;
+import com.atlas.payments.fraud.ReviewConflictException;
 import com.atlas.payments.ledger.IdempotencyConflictException;
 import com.atlas.payments.ledger.LedgerConflictException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.authentication.BadCredentialsException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
@@ -81,6 +84,40 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
                 ApiError.CONCURRENT_MODIFICATION,
                 "A concurrent payment modified this account. Resubmit with the same Idempotency-Key."));
+    }
+
+    /**
+     * {@code POST /auth/token} with a wrong username or password. Handled here
+     * (application code throws it explicitly) rather than by Spring Security's
+     * own filter-chain exception translation, because this exception comes
+     * from inside {@code AuthController}, after the request has already
+     * reached application code — the filter chain's own 401 handling is for
+     * requests that never carried a valid bearer token at all.
+     */
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<ApiError> handleBadCredentials(BadCredentialsException exception) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(new ApiError(
+                ApiError.INVALID_CREDENTIALS, "Invalid username or password"));
+    }
+
+    /**
+     * A review-workflow transition attempted on an already-resolved payment.
+     * A business conflict, not a server fault — 409, the same status M2 uses
+     * for every other "the state you assumed has moved on" case in this API.
+     * Its own exception type, not the generic {@code IllegalStateException} —
+     * see {@link ReviewConflictException}'s javadoc for why that distinction
+     * matters here specifically.
+     */
+    @ExceptionHandler(ReviewConflictException.class)
+    public ResponseEntity<ApiError> handleReviewConflict(ReviewConflictException exception) {
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(new ApiError(
+                ApiError.REVIEW_CONFLICT, exception.getMessage()));
+    }
+
+    @ExceptionHandler(PaymentNotFoundException.class)
+    public ResponseEntity<ApiError> handlePaymentNotFound(PaymentNotFoundException exception) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(new ApiError(
+                ApiError.PAYMENT_NOT_FOUND, exception.getMessage()));
     }
 
     /**

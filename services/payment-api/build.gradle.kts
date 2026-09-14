@@ -39,7 +39,22 @@ dependencies {
     // this is the version Boot 3.5.16 was actually tested against.
     implementation("org.springframework.kafka:spring-kafka")
 
+    // M5 — auth. Resource-server support (JwtDecoder + bearer-token
+    // filtering) is used for VALIDATING incoming tokens; this service also
+    // ISSUES its own tokens (see JwtService), for which the resource-server
+    // starter already pulls in Nimbus JOSE+JWT transitively — one JWT
+    // library for both directions, not two.
+    implementation("org.springframework.boot:spring-boot-starter-security")
+    implementation("org.springframework.boot:spring-boot-starter-oauth2-resource-server")
+
+    // M5 — observability
+    implementation("org.springframework.boot:spring-boot-starter-actuator")
+    implementation("io.micrometer:micrometer-registry-prometheus")
+    // JSON structured logging, correlated by endToEndId via MDC — see logback-spring.xml.
+    implementation("net.logstash.logback:logstash-logback-encoder:8.1")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
+    testImplementation("org.springframework.security:spring-security-test")
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.testcontainers:postgresql")

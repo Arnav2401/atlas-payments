@@ -1,11 +1,20 @@
 package com.atlas.payments.ledger;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 public interface JournalEntryRepository extends JpaRepository<JournalEntryEntity, Long> {
+
+    /** For the ops console's payment list — see PaymentDecisionController. */
+    Page<JournalEntryEntity> findAllByOrderByBookedAtDesc(Pageable pageable);
+
+    Optional<JournalEntryEntity> findByExternalId(UUID externalId);
 
     /**
      * Entries whose postings do not sum to zero.

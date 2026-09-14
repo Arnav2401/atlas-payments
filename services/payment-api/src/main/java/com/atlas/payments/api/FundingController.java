@@ -2,6 +2,7 @@ package com.atlas.payments.api;
 
 import com.atlas.payments.ledger.FundingService;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -20,12 +21,13 @@ import java.util.Currency;
  * available-funds check is otherwise untestable and undemonstrable without
  * SOME way to get money into the ledger at all, and none existed before this.
  *
- * <p><b>Explicitly unauthenticated, and that is a known gap, not an
- * oversight.</b> As it stands this endpoint creates money from the bank's own
- * position on request from anyone who can reach it. M5's RBAC work must put
- * this behind the supervisor role before this system is anything but a demo;
- * the README says so plainly, and this class should not quietly become load
- * -bearing before that happens.
+ * <p><b>Gated behind {@code SUPERVISOR} — closing the gap M3 flagged and left
+ * open on purpose, until the role existed to gate it with.</b> This endpoint
+ * creates money from the bank's own position on request; it is the highest-
+ * authority action in this API, one register above the "clear/escalate"
+ * actions {@code PaymentDecisionController} gates the same way, and the
+ * natural proof for the brief's "an analyst token cannot reach a supervisor
+ * endpoint" — see {@code FundingControllerSecurityTest}.
  */
 @RestController
 @RequestMapping("/ops")
@@ -40,6 +42,7 @@ public class FundingController {
     public record FundingRequest(String accountNumber, BigDecimal amount, String currency) {}
 
     @PostMapping("/funding")
+    @PreAuthorize("hasRole('SUPERVISOR')")
     public ResponseEntity<Void> fund(@RequestBody FundingRequest request) {
         fundingService.fund(request.accountNumber(), request.amount(), Currency.getInstance(request.currency()));
         return ResponseEntity.ok().build();

@@ -26,4 +26,13 @@ public record ApiError(String code, String message) {
 
     /** A concurrent payment on the same account won the version check. Retryable. */
     public static final String CONCURRENT_MODIFICATION = "ATLAS-E005";
+
+    /** POST /auth/token with a wrong username or password. */
+    public static final String INVALID_CREDENTIALS = "ATLAS-E006";
+
+    /** A review-workflow transition on an already-resolved payment. */
+    public static final String REVIEW_CONFLICT = "ATLAS-E007";
+
+    /** No payment exists with the given id. */
+    public static final String PAYMENT_NOT_FOUND = "ATLAS-E008";
 }

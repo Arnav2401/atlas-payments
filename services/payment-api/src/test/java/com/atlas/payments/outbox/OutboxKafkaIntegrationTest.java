@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.test.context.TestPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -55,6 +56,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * services/fraud-service) is correct.
  */
 @SpringBootTest
+@TestPropertySource(properties = "atlas.security.jwt-secret=" + com.atlas.payments.testing.TestSecurity.JWT_SECRET)
 @Testcontainers
 class OutboxKafkaIntegrationTest {
 
