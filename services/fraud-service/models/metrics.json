@@ -1,0 +1,45 @@
+{
+  "seed": 42,
+  "train_rows": 2216327,
+  "test_rows": 554082,
+  "train_fraud_rate": 0.001783581574379593,
+  "test_fraud_rate": 0.007688392692778326,
+  "pr_auc": 0.99643184595079,
+  "precision_at_recall": {
+    "recall_target": 0.8,
+    "precision": 0.9983007646559049
+  },
+  "cost_based_threshold": {
+    "threshold": 0.16266331658291458,
+    "review_cost_usd": 25.0,
+    "expected_cost_usd": 403270.08,
+    "precision": 0.9617560534057479,
+    "recall": 0.9976525821596244,
+    "flagged_count": 4419,
+    "missed_fraud_count": 10,
+    "total_frauds_in_test": 4260,
+    "cost_flag_nothing_usd": 6702727865.36,
+    "cost_flag_everything_usd": 13745550.0
+  },
+  "top_5_features_by_mean_abs_shap": {
+    "orig_balance_ratio": 7.970152378082275,
+    "dest_balance_ratio": 2.255995035171509,
+    "amount": 1.6406210660934448,
+    "hour_of_day": 1.177108883857727,
+    "dest_prior_txn_count_24h": 0.6192182898521423
+  },
+  "feature_names": [
+    "amount",
+    "hour_of_day",
+    "txn_type_is_cash_out",
+    "orig_balance_ratio",
+    "orig_balance_was_zero",
+    "orig_prior_txn_count_24h",
+    "orig_amount_zscore",
+    "new_counterparty",
+    "dest_prior_txn_count_24h",
+    "dest_prior_distinct_senders_24h",
+    "dest_balance_ratio",
+    "dest_balance_was_zero"
+  ]
+}

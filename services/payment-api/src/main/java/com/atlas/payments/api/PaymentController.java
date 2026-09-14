@@ -2,7 +2,12 @@ package com.atlas.payments.api;
 
 import com.atlas.payments.api.dto.PaymentInstructionRequest;
 import com.atlas.payments.api.dto.PaymentSubmissionResponse;
+import com.atlas.payments.domain.PaymentInstruction;
+import com.atlas.payments.fraud.FraudAssessment;
+import com.atlas.payments.fraud.FraudAssessmentRequest;
+import com.atlas.payments.fraud.FraudClient;
 import com.atlas.payments.ledger.InsufficientFundsException;
+import com.atlas.payments.ledger.Money;
 import com.atlas.payments.persistence.PaymentStore;
 import com.atlas.payments.persistence.StoredPayment;
 import com.atlas.payments.validation.PaymentValidator;
@@ -13,6 +18,10 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 
 /**
  * The HTTP boundary. Spring web types stop here.
@@ -47,6 +56,19 @@ import org.springframework.web.bind.annotation.RestController;
  * two payments, the same key twice is one.
  *
  * <p>In M1 it reaches an in-memory map. M2 makes it load-bearing.
+ *
+ * <h2>DECISION 3 — a fraud flag rides alongside acceptance, it does not block it</h2>
+ *
+ * <p>M3 adds a fraud assessment to every newly-written payment, but a flagged
+ * payment is still returned {@code ACCEPTED} with the assessment attached, not
+ * rejected outright. The alternative — auto-rejecting anything the model
+ * flags — needs a review workflow behind it (who clears a false positive, and
+ * how) that does not exist yet; that is M5's ops-console "decision action".
+ * Until it does, auto-rejecting on a probabilistic score would make a false
+ * positive unrecoverable rather than merely inconvenient. Scoring and
+ * surfacing the result now, blocking on it later once there is somewhere for
+ * a blocked payment to go, is the narrower and more honest claim for this
+ * module to make.
  */
 @RestController
 @RequestMapping("/payments")
@@ -54,10 +76,15 @@ public class PaymentController {
 
     private final PaymentValidator validator;
     private final PaymentStore paymentStore;
+    private final FraudClient fraudClient;
+    private final Clock clock;
 
-    public PaymentController(PaymentValidator validator, PaymentStore paymentStore) {
+    public PaymentController(PaymentValidator validator, PaymentStore paymentStore,
+                             FraudClient fraudClient, Clock clock) {
         this.validator = validator;
         this.paymentStore = paymentStore;
+        this.fraudClient = fraudClient;
+        this.clock = clock;
     }
 
     @PostMapping
@@ -71,8 +98,9 @@ public class PaymentController {
             case ValidationOutcome.Accepted accepted -> {
                 try {
                     StoredPayment stored = paymentStore.record(accepted.instruction(), idempotencyKey);
+                    FraudAssessment assessment = assessFraud(accepted.instruction(), stored);
                     yield ResponseEntity.ok(PaymentSubmissionResponse.accepted(
-                            accepted.instruction().endToEndId(), stored.paymentId()));
+                            accepted.instruction().endToEndId(), stored.paymentId(), assessment));
                 } catch (InsufficientFundsException insufficient) {
                     // A payment can pass all ten rules and still be refused by
                     // the ledger, because the rules cannot see account state.
@@ -88,5 +116,43 @@ public class PaymentController {
             case ValidationOutcome.Rejected rejected -> ResponseEntity.ok(
                     PaymentSubmissionResponse.rejected(request.endToEndId(), rejected.reasons()));
         };
+    }
+
+    /**
+     * Scores a genuinely new payment, and skips scoring a replay entirely.
+     *
+     * <p>A replay is the same payment already decided once — see the javadoc
+     * on {@code StoredPayment}. {@code stored.debtorBalanceBeforeMinor()} is
+     * {@code null} exactly on that path, which is what this check is really
+     * testing; it is not a null-safety formality.
+     *
+     * <p>{@code hourOfDay} is the wall-clock hour at submission time (UTC, for
+     * the same reason R08 fixes its clock to UTC — see
+     * SettlementDateWindowRule), not the simulated hour PaySim's `step`
+     * encoded during training. Same feature, same meaning ("what time of day
+     * did this happen"), different clock behind it — training never had
+     * access to a real submission timestamp because PaySim does not have one.
+     *
+     * <p>{@code isCashOut} is always {@code false} — see the field's javadoc
+     * on {@link FraudAssessmentRequest} for the scoping limitation that follows
+     * from it.
+     */
+    private FraudAssessment assessFraud(PaymentInstruction instruction, StoredPayment stored) {
+        if (stored.debtorBalanceBeforeMinor() == null) {
+            return null;
+        }
+
+        var currency = instruction.instructedCurrency();
+        var request = new FraudAssessmentRequest(
+                instruction.endToEndId(),
+                instruction.instructedAmount(),
+                false,
+                instruction.debtorAccount(),
+                instruction.creditorAccount(),
+                Money.fromMinorUnits(stored.debtorBalanceBeforeMinor(), currency),
+                Money.fromMinorUnits(stored.creditorBalanceBeforeMinor(), currency),
+                LocalDateTime.now(clock.withZone(ZoneOffset.UTC)).getHour());
+
+        return fraudClient.assess(request);
     }
 }

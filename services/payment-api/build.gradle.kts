@@ -29,10 +29,21 @@ dependencies {
     implementation("org.flywaydb:flyway-database-postgresql")
     runtimeOnly("org.postgresql:postgresql")
 
+    // M3 — fraud service client
+    implementation("org.springframework.boot:spring-boot-starter-aop") // required for @CircuitBreaker's AOP proxy
+    implementation("io.github.resilience4j:resilience4j-spring-boot3:2.4.0")
+
     testImplementation("org.springframework.boot:spring-boot-starter-test")
     testImplementation("org.springframework.boot:spring-boot-testcontainers")
     testImplementation("org.testcontainers:junit-jupiter")
     testImplementation("org.testcontainers:postgresql")
+    // Note: the com.github.tomakehurst:wiremock-jre8 coordinate stopped at
+    // 3.0.1; the project moved to org.wiremock:* from 3.x onward. The plain
+    // "wiremock" artifact does not bundle a Jetty server implementation and
+    // fails at startup ("Jetty 11 is not present") unless one is added
+    // separately; wiremock-standalone is the shaded, batteries-included jar.
+    testImplementation("org.wiremock:wiremock-standalone:3.13.2")
+    testImplementation("org.awaitility:awaitility:4.3.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

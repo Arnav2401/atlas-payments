@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fraud-service"
+version = "0.1.0"
+description = "Explainable fraud scoring for atlas-payments"
+requires-python = "==3.12.*"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+    "redis>=5.1",
+    "xgboost>=2.1",
+    "shap>=0.46",
+    "scikit-learn>=1.5",
+    "pandas>=2.2",
+    "numpy>=2.1",
+    "joblib>=1.4",
+    "pyarrow>=17.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "httpx>=0.27",
+    "fakeredis>=2.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fraud_service", "training"]

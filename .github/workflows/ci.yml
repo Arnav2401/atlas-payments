@@ -55,3 +55,37 @@ jobs:
           path: services/payment-api/build/reports/tests/test
           if-no-files-found: ignore
           retention-days: 14
+
+  fraud-service:
+    name: Fraud service (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # uv installs and pins Python 3.12 itself (per pyproject.toml's
+      # requires-python), the same way it does in local development — see
+      # README. No macOS libomp workaround needed here: Ubuntu's XGBoost
+      # wheel links against libgomp1, which the runner image ships already.
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10
+        with:
+          version: "0.12.13"
+
+      - name: Install dependencies
+        working-directory: services/fraud-service
+        run: uv sync --locked
+
+      # Runs against a small, fast, synthetic fixture model (tests/conftest.py),
+      # not the real trained artifact - the 494MB PaySim CSV it trains from is
+      # not distributed with this repo (see docs/sources.md). The real
+      # training run and its metrics are verified locally and recorded in
+      # models/metrics.json, which IS committed.
+      #
+      # test_feature_latency.py skips itself (not fails) when no Redis is
+      # reachable, which is the case on this runner — its real-Redis p99
+      # number is measured and reported in the README, not re-verified here.
+      - name: Test
+        working-directory: services/fraud-service
+        run: uv run pytest -v

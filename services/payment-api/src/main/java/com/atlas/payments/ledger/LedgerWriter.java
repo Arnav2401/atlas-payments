@@ -88,7 +88,7 @@ public class LedgerWriter {
      * backoff is the obvious refinement and belongs with M5's resilience work.
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public PaymentSubmissionEntity write(PaymentInstruction instruction, String idempotencyKey) {
+    public LedgerWriteResult write(PaymentInstruction instruction, String idempotencyKey) {
         String currencyCode = instruction.instructedCurrency().getCurrencyCode();
 
         long amountMinor = Money.toMinorUnits(
@@ -100,7 +100,16 @@ public class LedgerWriter {
         AccountEntity debtor = resolveAccount(instruction.debtorAccount(), currencyCode, true);
         AccountEntity creditor = resolveAccount(instruction.creditorAccount(), currencyCode, false);
 
-        assertSufficientFunds(debtor, amountMinor);
+        // Captured once, before either posting is added, and handed back to
+        // the caller: this is the balance state fraud scoring needs to see —
+        // the state the payment was decided against, not the state after it
+        // landed. Computed regardless of account type (assertSufficientFunds
+        // only CHECKS it conditionally) so a fraud assessment is always
+        // possible even when the funds check itself does not apply.
+        long debtorBalanceBeforeMinor = accounts.availableMinorUnits(debtor.getAccountNumber());
+        long creditorBalanceBeforeMinor = accounts.availableMinorUnits(creditor.getAccountNumber());
+
+        assertSufficientFunds(debtor, debtorBalanceBeforeMinor, amountMinor);
 
         Instant now = Instant.now(clock);
 
@@ -114,13 +123,17 @@ public class LedgerWriter {
 
         journalEntries.save(entry);
 
-        return submissions.save(new PaymentSubmissionEntity(
+        PaymentSubmissionEntity submission = submissions.save(new PaymentSubmissionEntity(
                 idempotencyKey, RequestFingerprint.of(instruction), entry, now));
+
+        return new LedgerWriteResult(submission, debtorBalanceBeforeMinor, creditorBalanceBeforeMinor);
     }
 
     /**
-     * The funds check, and the reason the account was read under a forced version
-     * increment.
+     * The funds check. Takes the already-read balance rather than reading it
+     * again, so the value this check decides against is exactly the value
+     * {@link #write} hands back for fraud scoring — one read, two consumers,
+     * rather than two reads that could in principle disagree.
      *
      * <p>SETTLEMENT accounts are exempt: they are the bank's own position and are
      * expected to run negative. Applying a customer overdraft rule to a nostro
@@ -130,14 +143,13 @@ public class LedgerWriter {
      * funded customer account carries a credit — negative — balance, and what
      * they can spend is the negation of it.
      */
-    private void assertSufficientFunds(AccountEntity debtor, long amountMinor) {
+    private void assertSufficientFunds(AccountEntity debtor, long availableMinorUnits, long amountMinor) {
         if (debtor.getAccountType() == AccountType.SETTLEMENT) {
             return;
         }
 
-        long available = accounts.availableMinorUnits(debtor.getAccountNumber());
-        if (available < amountMinor) {
-            throw new InsufficientFundsException(available, amountMinor);
+        if (availableMinorUnits < amountMinor) {
+            throw new InsufficientFundsException(availableMinorUnits, amountMinor);
         }
     }
 

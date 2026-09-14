@@ -1,5 +1,6 @@
 package com.atlas.payments.api.dto;
 
+import com.atlas.payments.fraud.FraudAssessment;
 import com.atlas.payments.validation.RejectionReason;
 import com.fasterxml.jackson.annotation.JsonInclude;
 
@@ -16,7 +17,8 @@ public record PaymentSubmissionResponse(
         String endToEndId,
         Status status,
         String paymentId,
-        List<RejectionDetail> rejections
+        List<RejectionDetail> rejections,
+        FraudAssessmentDetail fraudAssessment
 ) {
 
     public enum Status { ACCEPTED, REJECTED }
@@ -28,8 +30,34 @@ public record PaymentSubmissionResponse(
      */
     public record RejectionDetail(String code, String field, String message) {}
 
-    public static PaymentSubmissionResponse accepted(String endToEndId, String paymentId) {
-        return new PaymentSubmissionResponse(endToEndId, Status.ACCEPTED, paymentId, null);
+    /**
+     * The wire shape of a {@link FraudAssessment}. A separate type, not the
+     * domain record reused directly, for the same reason {@code RejectionDetail}
+     * exists: the wire contract and the internal model are allowed to diverge
+     * without one edit forcing the other, and today they already do — this type
+     * has no {@code topFeatures} entry duplicated per field, it carries the list
+     * as-is.
+     */
+    public record FraudAssessmentDetail(
+            boolean flagged, Double probability, String source, List<FraudAssessment.TopFeature> topFeatures) {
+
+        static FraudAssessmentDetail from(FraudAssessment assessment) {
+            return new FraudAssessmentDetail(
+                    assessment.flagged(), assessment.probability(),
+                    assessment.source().name(), assessment.topFeatures());
+        }
+    }
+
+    /**
+     * @param fraudAssessment {@code null} when the payment was a replay (see
+     *        {@code PaymentController#assessFraud}) — a replay is not scored a
+     *        second time, so there is no assessment to report, not an empty one.
+     */
+    public static PaymentSubmissionResponse accepted(
+            String endToEndId, String paymentId, FraudAssessment fraudAssessment) {
+        return new PaymentSubmissionResponse(
+                endToEndId, Status.ACCEPTED, paymentId, null,
+                fraudAssessment == null ? null : FraudAssessmentDetail.from(fraudAssessment));
     }
 
     /**
@@ -46,7 +74,7 @@ public record PaymentSubmissionResponse(
                         reason.ruleId().code(), reason.field(), reason.message()))
                 .toList();
 
-        return new PaymentSubmissionResponse(truncate(endToEndId), Status.REJECTED, null, details);
+        return new PaymentSubmissionResponse(truncate(endToEndId), Status.REJECTED, null, details, null);
     }
 
     /**
@@ -57,7 +85,7 @@ public record PaymentSubmissionResponse(
             String endToEndId, String code, String field, String message) {
         return new PaymentSubmissionResponse(
                 truncate(endToEndId), Status.REJECTED, null,
-                List.of(new RejectionDetail(code, field, message)));
+                List.of(new RejectionDetail(code, field, message)), null);
     }
 
     private static String truncate(String value) {

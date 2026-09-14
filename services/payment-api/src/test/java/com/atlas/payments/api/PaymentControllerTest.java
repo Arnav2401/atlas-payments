@@ -1,6 +1,8 @@
 package com.atlas.payments.api;
 
 import com.atlas.payments.config.ValidationConfig;
+import com.atlas.payments.fraud.FraudAssessment;
+import com.atlas.payments.fraud.FraudClient;
 import com.atlas.payments.persistence.PaymentStore;
 import com.atlas.payments.persistence.StoredPayment;
 import org.junit.jupiter.api.Test;
@@ -60,10 +62,21 @@ class PaymentControllerTest {
     @MockitoBean
     private PaymentStore paymentStore;
 
+    /**
+     * Mocked, never the real HTTP client: a @WebMvcTest slice does not start a
+     * fraud service to call, and should not need one to assert the HTTP
+     * contract this class exists to test. The circuit-breaker/fallback
+     * behaviour itself is proven for real in FraudClientResilienceTest.
+     */
+    @MockitoBean
+    private FraudClient fraudClient;
+
     @Test
     void accepts_a_valid_payment_and_records_it_under_the_idempotency_key() throws Exception {
         when(paymentStore.record(any(), eq("key-1")))
-                .thenReturn(new StoredPayment("pay-123", Instant.now(), false));
+                .thenReturn(new StoredPayment("pay-123", Instant.now(), false, 100000L, 0L));
+        when(fraudClient.assess(any()))
+                .thenReturn(new FraudAssessment(false, 0.02, FraudAssessment.Source.MODEL, java.util.List.of()));
 
         mockMvc.perform(post("/payments")
                         .header("Idempotency-Key", "key-1")

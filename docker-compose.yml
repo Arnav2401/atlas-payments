@@ -11,9 +11,50 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - atlas-pgdata:/var/lib/postgresql/data
+      # postgres:18 changed its expected layout: earlier images stored data
+      # directly at /var/lib/postgresql/data; 18+ wants the volume mounted at
+      # the parent /var/lib/postgresql and creates its own major-version
+      # subdirectory below it (see the docker-library/postgres image's own
+      # startup message). Mounting at the old sub-path here made the
+      # container refuse to start against a pre-18-shaped volume — caught
+      # only once `docker compose up` was actually run end-to-end, not by
+      # `docker pull` or any of the earlier ad-hoc `docker run` containers
+      # used for M2's tests, which never exercised the compose file's own
+      # volume mount at all.
+      - atlas-pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    container_name: atlas-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  fraud-service:
+    build: services/fraud-service
+    container_name: atlas-fraud-service
+    # Needs services/fraud-service/models/model.json to already exist locally
+    # — see the Dockerfile and README for why this cannot be trained inside
+    # the build itself. `docker compose up fraud-service` fails fast at
+    # startup rather than serving with no model if that step was skipped.
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      FRAUD_REDIS_URL: redis://redis:6379/0
+    ports:
+      - "8001:8001"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/health')"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -35,6 +35,34 @@ spring:
 server:
   port: 8080
 
+atlas:
+  fraud-service:
+    base-url: ${ATLAS_FRAUD_SERVICE_URL:http://localhost:8001}
+
+resilience4j:
+  circuitbreaker:
+    instances:
+      fraud-service:
+        # A sliding window of the last 10 calls, not a time window — with a
+        # payments-scale request rate a count-based window trips on genuine
+        # failure density regardless of traffic volume, where a time-based
+        # window would behave differently at 2am than at peak.
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        # Half of the window failing is the circuit's real trigger; the RestClient's
+        # own 800ms read timeout - see FraudClientConfig - is what makes a single
+        # hung call actually fail fast enough to be counted here at all.
+        failure-rate-threshold: 50
+        slow-call-duration-threshold: 800ms
+        slow-call-rate-threshold: 50
+        # Half-open: after this, let ONE real call through to test recovery,
+        # rather than staying open until a human intervenes.
+        wait-duration-in-open-state: 15s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+        register-health-indicator: true
+
 # TODO(M1): the settlement window N for R08 belongs here once you have chosen it,
 # along with the field-length bounds for R10. Putting them in config rather than
 # in the rule classes is what lets you answer "how would you version these rules?"

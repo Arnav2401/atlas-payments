@@ -27,3 +27,18 @@ secrets/
 # Large reference data — document the source, don't commit the file
 data/
 docs/samples/*.csv
+
+# Trained model artifacts — regenerable via `training/train.py`; the raw
+# PaySim CSV they're trained from is itself undistributed (see
+# services/fraud-service/docs/sources.md). metrics.json is small and
+# human-readable and is committed deliberately — it IS the reported numbers.
+services/fraud-service/models/*.json
+!services/fraud-service/models/metrics.json
+services/fraud-service/models/*.csv
+services/fraud-service/.venv/
+services/fraud-service/__pycache__/
+services/fraud-service/**/__pycache__/
+services/fraud-service/.pytest_cache/
+# uv.lock is committed deliberately, same reasoning as the Gradle wrapper:
+# a pinned lock file is what makes `uv sync` reproduce the same environment
+# on a different machine, not just on this one.

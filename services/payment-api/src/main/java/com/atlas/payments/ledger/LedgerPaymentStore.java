@@ -46,11 +46,14 @@ public class LedgerPaymentStore implements PaymentStore {
         }
 
         try {
-            PaymentSubmissionEntity written = writer.write(instruction, idempotencyKey);
+            LedgerWriteResult result = writer.write(instruction, idempotencyKey);
+            PaymentSubmissionEntity written = result.submission();
             return new StoredPayment(
                     written.getJournalEntry().getExternalId().toString(),
                     written.getCreatedAt(),
-                    false);
+                    false,
+                    result.debtorBalanceBeforeMinor(),
+                    result.creditorBalanceBeforeMinor());
         } catch (DataIntegrityViolationException lostTheRace) {
             // Another transaction committed this key first. Ours is aborted;
             // read the winner's result in a new one.
@@ -83,6 +86,8 @@ public class LedgerPaymentStore implements PaymentStore {
         return new StoredPayment(
                 submission.getJournalEntry().getExternalId().toString(),
                 submission.getCreatedAt(),
-                true);
+                true,
+                null,
+                null);
     }
 }

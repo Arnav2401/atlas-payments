@@ -9,7 +9,7 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M2 core complete — double-entry ledger with available-funds checking on PostgreSQL. 129 tests passing.
+**Status:** M3 core complete — explainable fraud scoring (XGBoost + SHAP) behind a circuit breaker, with a conservative rule fallback proven live. 133 Java tests, 8 Python tests passing.
 
 ## A note on ISO 20022
 
@@ -74,13 +74,31 @@ Observability: Prometheus + Grafana across all services
 ## Run
 
 ```bash
-docker compose up -d        # PostgreSQL 18
+docker compose up -d postgres redis   # fraud-service needs a trained model first — see below
 ./gradlew :services:payment-api:bootRun
 ```
 
 Flyway applies the schema at startup. `ddl-auto` is `validate`, so a drift
 between the JPA entities and the migrations fails at boot rather than silently
 diverging — it has already caught one real mismatch (`CHAR(3)` vs `VARCHAR(3)`).
+
+The fraud service needs a trained model before it can start at all — the
+raw dataset it trains from is not distributed with this repo:
+
+```bash
+cd services/fraud-service
+uv sync
+curl -L -o /tmp/paysim.csv https://huggingface.co/datasets/theman10/paysim/resolve/main/paysim.csv
+uv run python -m training.train --data /tmp/paysim.csv    # ~2 minutes, writes models/model.json
+uv run uvicorn fraud_service.main:app --port 8001          # or: docker compose up fraud-service
+```
+
+> **macOS without Homebrew:** XGBoost's wheel needs `libomp.dylib`, which
+> `brew install libomp` normally provides. Without Homebrew, copy one from
+> any existing installation (Anaconda ships one) to
+> `~/.local/share/uv/python/cpython-3.12.14-macos-aarch64-none/lib/libomp.dylib`
+> (or the equivalent path for your uv-managed Python install). The Docker
+> image needs no such workaround — `apt-get install libgomp1` there instead.
 
 ## The ledger
 
@@ -279,6 +297,107 @@ shape (`ATLAS-E001`).
 optional-then-required, because adding a required header later is a breaking
 change. In M1 it reaches an in-memory map; M2 makes it load-bearing.
 
+## Fraud scoring
+
+A separate service (`services/fraud-service`, FastAPI, Python 3.12) scores
+every payment after it posts to the ledger. `payment-api` calls it over HTTP
+behind a Resilience4j circuit breaker; killing the fraud service leaves
+payments processing on a conservative rule fallback — proven live below, not
+just asserted.
+
+### Data and what it forced the design to confront
+
+Trained on PaySim1 (public Hugging Face mirror; see
+`services/fraud-service/docs/sources.md` — the raw 6.36M-row CSV is not
+committed, same convention as every other large reference file here).
+Restricted to `TRANSFER`/`CASH_OUT`, 2,770,409 rows: fraud is measured to
+occur in no other transaction type, so including them would let a trivial
+rule masquerade as model performance.
+
+**Two real bugs were found and fixed by treating suspiciously good numbers as
+a reason to look closer, not as a result to write down:**
+
+- The first temporal split cut by step *value*, not row count. Transaction
+  volume across the 743 simulated steps is wildly non-uniform (median
+  112 rows/step, ranging from 23,768 to single digits), and the sparse tail
+  has a fraud rate ~10x the rest of the series. That put a tiny, atypical,
+  fraud-dense sliver into the test set, and PR-AUC came back implausibly
+  close to perfect against it. Splitting by row count in chronological order
+  fixed both the sizing and the skew.
+- A rolling-window feature computed with `groupby().rolling()` silently
+  scrambled row alignment (that call's result is ordered by group, not by the
+  original row order) — caught by the training/serving consistency test, not
+  by inspection. Rewritten with the same label-based assignment already
+  proven correct for the fan-in feature.
+
+**Why performance is still high, verified rather than assumed:** 97.8% of
+fraudulent transactions drain the debtor's balance to within 1%, versus 0.15%
+of legitimate ones — a real, pre-transaction, non-leaky signal, and
+consistently the model's largest SHAP contributor by a wide margin. It is
+also directly why the Java-side fallback rule (below) is not an arbitrary
+guess.
+
+### Features
+
+Twelve, in `fraud_service/feature_spec.py`, the single shared definition
+training (pandas, offline) and serving (Redis, online) both implement against
+— agreement between the two is asserted by a dedicated consistency test, with
+a synthetic sequence built specifically to exercise 24-hour window *expiry*,
+not just accumulation.
+
+Origin-side "account history" and "velocity" features are cold-started for
+almost every PaySim row — 2,768,630 of 2,770,409 origin accounts transact
+exactly once in this dataset. Destination accounts repeat substantially
+(509,565 unique, 69% appearing more than once, up to 75 times), which is real
+fan-in structure — many one-shot senders into one receiving account is the
+textbook shape of a mule account — so two features beyond the brief's literal
+list were added because the data justified them:
+`dest_prior_txn_count_24h` and `dest_prior_distinct_senders_24h`.
+
+### Results (from `models/metrics.json`, regenerable via `uv run python -m training.train --data <path>`, seed 42)
+
+| Metric | Value |
+|---|---|
+| PR-AUC | 0.9964 |
+| Precision at 80% recall | 0.9983 |
+| Cost-minimising threshold | 0.163 |
+| At that threshold | precision 0.962, recall 0.998, 4,419 flagged, 10 of 4,260 frauds missed |
+| Feature computation latency (real Redis) | p50 0.40ms, p95 0.48ms, p99 0.70ms |
+
+**The cost threshold is a real optimisation, not a picked number** — swept
+against the actual dollar amount of every missed fraud plus a $25/review
+assumption (see `training/threshold.py`), and checked against both trivial
+extremes: flagging nothing would cost $6.70B in missed fraud on the test set;
+flagging everything would cost $13.7M in review overhead. The chosen threshold
+beats both by construction, not by luck.
+
+### Java-side resilience — proven live, not just tested
+
+`FraudClient` calls the service behind a Resilience4j circuit breaker
+(`RestFraudClient`); on repeated failure it falls back to
+`ConservativeRuleFallback` — the model's own top finding (balance-drain),
+turned into a threshold rule with no ML dependency. Verified with the full
+stack actually running:
+
+```
+payment (1% of balance) -> MODEL,  probability 0.0004, not flagged
+payment (100% of balance) -> MODEL, probability 0.99996, flagged
+                              [fraud service killed]
+payment (1% of balance) -> FALLBACK_RULES, not flagged   (29ms, connection refused)
+payment (95% of balance) -> FALLBACK_RULES, flagged
+```
+
+A flagged payment is still `ACCEPTED` with the assessment attached, not
+auto-rejected — see DECISION 3 in `PaymentController`'s javadoc for why:
+auto-rejecting on a probabilistic score needs a review workflow (M5's
+ops-console decision action) that does not exist yet.
+
+**Known scoping limitation, stated plainly:** every payment sent to the model
+has `isCashOut=false` — atlas-payments has no cash-withdrawal concept, so it
+only ever exercises the TRANSFER half of the population the model was trained
+on. The CASH_OUT-specific behaviour the model learned is never exercised by
+this system's real traffic.
+
 ## Metrics
 
 Every number below must be regenerable by a command in this repo. Nothing goes
@@ -286,12 +405,12 @@ here that cannot be reproduced on demand.
 
 | Metric | Value | Command |
 |---|---|---|
-| Model PR-AUC | *TBD (M3)* | |
-| Precision at fixed recall | *TBD (M3)* | |
-| Decision threshold + cost justification | *TBD (M3)* | |
+| Model PR-AUC | 0.9964 | `uv run python -m training.train --data <path>` |
+| Precision at 80% recall | 0.9983 | `uv run python -m training.train --data <path>` |
+| Decision threshold + cost justification | 0.163, see `models/metrics.json` | `uv run python -m training.train --data <path>` |
 | Sustained throughput | *TBD (M5)* | |
 | p50 / p95 / p99 latency | *TBD (M5)* | |
-| Feature computation p99 | *TBD (M3)* | |
+| Feature computation p99 | 0.70ms | `uv run pytest tests/test_feature_latency.py -s` (needs Redis) |
 
 ## Documentation
 
