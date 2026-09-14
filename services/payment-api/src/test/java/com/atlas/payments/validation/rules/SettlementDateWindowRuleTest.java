@@ -13,15 +13,7 @@ import java.time.ZoneOffset;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * R08 — settlement date window.
- *
- * <p>Every test here runs against a fixed Clock. That is the point of the rule's
- * design: with LocalDate.now() inside the rule, none of the boundary assertions
- * below could be written reliably.
- */
 class SettlementDateWindowRuleTest {
-
     private static final LocalDate TODAY = LocalDate.of(2026, 9, 14);
     private static final int WINDOW = 30;
 
@@ -56,11 +48,6 @@ class SettlementDateWindowRuleTest {
         assertTrue(rule.check(request).isPresent());
     }
 
-    /**
-     * Edge: both boundaries, and both inclusive. "Not in the past" and "not more
-     * than N days forward" are exactly the phrasings that produce an off-by-one
-     * nobody notices until a customer settles on day N.
-     */
     @Test
     void edge_both_boundaries_are_inclusive() {
         assertTrue(rule.check(PaymentInstructionRequests.valid()
@@ -71,12 +58,6 @@ class SettlementDateWindowRuleTest {
                 "exactly N days forward must be accepted");
     }
 
-    /**
-     * Edge: the rule evaluates "today" in UTC regardless of the clock's own zone.
-     * At 02:00 on the 15th in Tokyo it is still the 14th in UTC, so a date of the
-     * 14th is not yet in the past. Without the explicit zone this rule's answer
-     * would depend on where the container runs.
-     */
     @Test
     void edge_today_is_evaluated_in_utc_not_the_clock_zone() {
         Clock tokyo = Clock.fixed(

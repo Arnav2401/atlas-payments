@@ -22,26 +22,14 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Loaded once at process startup, not per-request — see the predictor's
-    # own docstring for why (disk + tree-parsing cost has no business being
-    # inside the 20ms feature-latency budget).
     predictor = FraudPredictor(settings.model_dir)
 
     redis_client = redis.from_url(settings.redis_url, decode_responses=True)
     feature_engineer = FeatureEngineer(velocity=VelocityFeatures(redis_client), history=AccountHistory(redis_client))
 
-    # One ScoringService, shared by the HTTP route (api/routes.py) and the
-    # Kafka consumer below — see scoring.py's module docstring for why that
-    # sharing is the point, not an implementation convenience.
     scoring_service = ScoringService(engineer=feature_engineer, predictor=predictor)
     app.state.scoring_service = scoring_service
 
-    # The Kafka consumer is optional at startup, deliberately: a developer
-    # running only `uv run uvicorn ...` to exercise the synchronous /score
-    # endpoint (M3's path) should not be forced to also stand up Kafka. If
-    # ATLAS_KAFKA_BOOTSTRAP_SERVERS is unset, the async path (M4) simply does
-    # not start, and the service logs that plainly rather than failing to boot
-    # or silently pretending the async pipeline is running when it is not.
     consumer_task: asyncio.Task | None = None
     outbox_consumer: OutboxConsumer | None = None
     if settings.kafka_bootstrap_servers:
@@ -53,9 +41,6 @@ async def lifespan(app: FastAPI):
         logger.warning("ATLAS_KAFKA_BOOTSTRAP_SERVERS not set - the async (payments.submitted) path is NOT running; "
                         "only the synchronous /score endpoint is available")
 
-    # M6 (optional), same shape as the Kafka consumer above: unset means
-    # GET /rings serves an empty, explicitly-disabled response rather than
-    # failing service startup.
     if settings.neo4j_uri:
         app.state.neo4j_driver = GraphDatabase.driver(
             settings.neo4j_uri, auth=(settings.neo4j_user, settings.neo4j_password)

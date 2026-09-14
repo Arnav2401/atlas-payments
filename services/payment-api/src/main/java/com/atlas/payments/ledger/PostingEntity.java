@@ -10,19 +10,9 @@ import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
 
-/**
- * One leg of a journal entry.
- *
- * <p>{@code amountMinor} is a signed count of the currency's minor unit:
- * positive is a debit, negative is a credit. One signed column rather than
- * separate debit and credit columns, so that "this entry balances" is the single
- * expression {@code SUM(amount_minor) = 0} rather than a comparison of two sums
- * that can disagree about NULL.
- */
 @Entity
 @Table(name = "postings")
 public class PostingEntity {
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;

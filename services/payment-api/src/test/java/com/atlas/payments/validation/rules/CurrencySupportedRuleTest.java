@@ -16,9 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R03 — instructed currency must be one this service settles. */
 class CurrencySupportedRuleTest {
-
     private final CurrencySupportedRule rule = new CurrencySupportedRule();
 
     @Test
@@ -39,11 +37,6 @@ class CurrencySupportedRuleTest {
         assertEquals("instructedCurrency", reason.get().field());
     }
 
-    /**
-     * Edge: lowercase is rejected, not normalised. If you decide to normalise
-     * instead, this test is the one that should fail and force the decision to
-     * be made deliberately rather than by a stray toUpperCase().
-     */
     @ParameterizedTest
     @ValueSource(strings = {"usd", "Usd", "uSD"})
     void edge_case_variants_are_rejected_not_normalised(String currency) {
@@ -58,10 +51,6 @@ class CurrencySupportedRuleTest {
         assertTrue(rule.check(PaymentInstructionRequests.valid().instructedCurrency("   ").build()).isPresent());
     }
 
-    /**
-     * Edge, and the reason this rule is not a one-line JDK lookup: DEM has not
-     * been a currency since 2002, but the JDK still knows it.
-     */
     @Test
     void edge_a_withdrawn_currency_is_rejected_even_though_the_jdk_knows_it() {
         var request = PaymentInstructionRequests.valid().instructedCurrency("DEM").build();
@@ -69,12 +58,6 @@ class CurrencySupportedRuleTest {
         assertTrue(rule.check(request).isPresent(), "DEM must not be settleable");
     }
 
-    /**
-     * Executable rationale. This is not testing our code — it pins the JDK
-     * behaviour that justifies the allow-list, so that if a future JDK cleans up
-     * its currency data, this test fails and tells you the justification has
-     * changed rather than leaving a stale comment behind.
-     */
     @Test
     void documents_that_the_jdk_currency_list_is_not_a_live_iso_4217_feed() {
         Set<String> jdkCodes = Currency.getAvailableCurrencies().stream()
@@ -87,10 +70,6 @@ class CurrencySupportedRuleTest {
                 "XXX is a pseudo-currency with no minor unit and would break R02");
     }
 
-    /**
-     * A typo in the allow-list would silently reject good payments. Fail the
-     * build instead.
-     */
     @Test
     void every_supported_currency_is_a_real_iso_4217_code() {
         Set<String> jdkCodes = Currency.getAvailableCurrencies().stream()
@@ -104,7 +83,6 @@ class CurrencySupportedRuleTest {
         assertTrue(unknown.isEmpty(), "not real ISO 4217 codes: " + unknown);
     }
 
-    /** R02 depends on the minor unit, so the set must cover more than the 2-decimal case. */
     @Test
     void the_supported_set_spans_every_minor_unit_shape_r02_must_handle() {
         Set<Integer> minorUnits = CurrencySupportedRule.DEFAULT_SUPPORTED_CURRENCIES.stream()

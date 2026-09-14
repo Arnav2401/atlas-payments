@@ -14,12 +14,6 @@ export interface TopFeature {
 
 export type ReviewStatus = "NONE" | "UNDER_REVIEW" | "CLEARED" | "ESCALATED";
 
-// Mirrors PaymentDecisionController.PaymentSummaryResponse exactly - the
-// four fraud fields (flagged/probability/source/topFeatures) are null/empty
-// for a payment that predates a decision consumer, or whose decision hasn't
-// arrived yet (the outbox -> Kafka -> consumer path is asynchronous; the
-// ledger write that produced this row is not the same transaction as the
-// decision that scored it).
 export interface PaymentSummary {
   paymentId: string;
   endToEndId: string;
@@ -40,10 +34,6 @@ export interface ApiError {
   message: string;
 }
 
-// Mirrors RingsController.RingsResponse (payment-api) exactly. `enabled:
-// false` means the fraud service has no Neo4j configured (M6 is optional) -
-// distinct from an empty candidate list, which would mean "checked, found
-// nothing suspicious".
 export interface RingCandidate {
   accountId: string;
   community: number;

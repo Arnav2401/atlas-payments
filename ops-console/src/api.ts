@@ -28,8 +28,7 @@ async function request<T>(path: string, token: string | null, init?: RequestInit
       const body = (await res.json()) as ApiError;
       code = body.code ?? code;
     } catch {
-      // Non-JSON error body (e.g. a 403 with no content) - the status code
-      // alone is still useful to the caller.
+      // Not every error carries a JSON body (a 403 has none). Status is enough.
     }
     throw new ApiRequestError(res.status, code);
   }
@@ -68,15 +67,18 @@ export async function getRings(token: string, topK = 15): Promise<RingsResponse>
   return request<RingsResponse>(`/rings?topK=${topK}`, token);
 }
 
-// Client-side only, and not a security boundary - it exists purely to decide
-// which action buttons to render. The server enforces the real boundary with
-// @PreAuthorize on every one of those endpoints regardless of what this
-// function returns, proven live in PaymentAuthorizationTest (an ANALYST
-// token gets 403 from /clear and /escalate even if a client never checked
-// the role at all).
+// Only decides which buttons to render. The server re-checks the role on every
+// endpoint, so a wrong answer here is a cosmetic bug, not a privilege one.
 export function roleFromToken(token: string): Role | null {
   try {
-    const payload = JSON.parse(atob(token.split(".")[1]));
+    // JWT segments are base64url: atob() needs the URL-safe chars swapped back
+    // and the stripped '=' padding restored, or it throws on some tokens.
+    const segment = token.split(".")[1];
+    const base64 = segment.replace(/-/g, "+").replace(/_/g, "/").padEnd(
+      segment.length + ((4 - (segment.length % 4)) % 4),
+      "=",
+    );
+    const payload = JSON.parse(atob(base64));
     return payload.role === "SUPERVISOR" ? "SUPERVISOR" : "ANALYST";
   } catch {
     return null;

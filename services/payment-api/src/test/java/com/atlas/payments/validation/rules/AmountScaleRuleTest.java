@@ -9,9 +9,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R02 — decimal places must not exceed the currency's minor unit. */
 class AmountScaleRuleTest {
-
     private final AmountScaleRule rule = new AmountScaleRule();
 
     @Test
@@ -37,11 +35,6 @@ class AmountScaleRuleTest {
         assertTrue(rule.check(request).isPresent(), currency + " " + amount + " should be rejected");
     }
 
-    /**
-     * Edge: 10 and 10.00 are equal in value and differ in scale. Both are within
-     * USD's two decimal places, so both pass — this pins that the rule compares
-     * scale against a ceiling rather than demanding an exact match.
-     */
     @Test
     void edge_equal_values_with_different_scale_are_both_accepted_for_usd() {
         assertTrue(rule.check(PaymentInstructionRequests.valid()
@@ -50,10 +43,6 @@ class AmountScaleRuleTest {
                 .instructedCurrency("USD").instructedAmount("10.00").build()).isEmpty());
     }
 
-    /**
-     * Edge: documents the decision NOT to stripTrailingZeros() first. 100.000 USD
-     * has a representable value but asks for precision USD does not have.
-     */
     @Test
     void edge_trailing_zeros_beyond_the_minor_unit_are_rejected_not_stripped() {
         var request = PaymentInstructionRequests.valid()
@@ -63,7 +52,6 @@ class AmountScaleRuleTest {
                 "100.000 USD is rejected: precision is part of the instruction");
     }
 
-    /** Edge: negative scale. 1E+2 is a whole number and must not be mistaken for fractional. */
     @Test
     void edge_negative_scale_is_accepted() {
         var request = PaymentInstructionRequests.valid()
@@ -72,7 +60,6 @@ class AmountScaleRuleTest {
         assertTrue(rule.check(request).isEmpty());
     }
 
-    /** This rule must stay silent about failures that belong to R01 and R03. */
     @Test
     void defers_to_the_rule_that_owns_the_failure() {
         assertTrue(rule.check(PaymentInstructionRequests.valid()

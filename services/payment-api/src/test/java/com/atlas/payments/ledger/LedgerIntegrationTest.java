@@ -38,16 +38,10 @@ import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * The ledger against a real PostgreSQL, because nothing this module claims can be
- * shown against H2 or a mock. The unique constraint, the deferred constraint
- * trigger, the version check and the insert race are all database behaviour.
- */
 @SpringBootTest
 @TestPropertySource(properties = "atlas.security.jwt-secret=" + com.atlas.payments.testing.TestSecurity.JWT_SECRET)
 @Testcontainers
 class LedgerIntegrationTest {
-
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18");
@@ -69,8 +63,6 @@ class LedgerIntegrationTest {
 
     @BeforeEach
     void uniqueAccountsPerTest() {
-        // Distinct accounts per test, so the shared container's accumulated state
-        // cannot make one test's assertions depend on another's ordering.
         debtor = "DE89" + randomSuffix();
         creditor = "GB29" + randomSuffix();
     }
@@ -94,8 +86,6 @@ class LedgerIntegrationTest {
         return "key-" + UUID.randomUUID();
     }
 
-    // ----------------------------------------------------------------- postings
-
     @Test
     void a_payment_moves_funds_and_the_ledger_still_balances() {
         funding.fund(debtor, new BigDecimal("1000.00"), USD);
@@ -108,7 +98,6 @@ class LedgerIntegrationTest {
         assertTrue(reconciliation.reconcile().balanced());
     }
 
-    /** JPY has no minor unit — 100 yen is 100, not 10000. */
     @Test
     void minor_units_follow_the_currency() {
         funding.fund(debtor, new BigDecimal("1000"), Currency.getInstance("JPY"));
@@ -118,7 +107,6 @@ class LedgerIntegrationTest {
         assertEquals(900L, accounts.availableMinorUnits(debtor));
     }
 
-    /** BHD has three. This is the case a hard-coded "multiply by 100" gets wrong. */
     @Test
     void three_decimal_currencies_are_not_assumed_to_have_two() {
         funding.fund(debtor, new BigDecimal("10.000"), Currency.getInstance("BHD"));
@@ -127,8 +115,6 @@ class LedgerIntegrationTest {
 
         assertEquals(8_766L, accounts.availableMinorUnits(debtor), "10000 - 1234 minor units");
     }
-
-    // -------------------------------------------------------------- idempotency
 
     @Test
     void the_same_payment_submitted_twice_produces_exactly_one_ledger_effect() {
@@ -145,15 +131,6 @@ class LedgerIntegrationTest {
         assertEquals(75_000L, accounts.availableMinorUnits(debtor), "charged once, not twice");
     }
 
-    /**
-     * Deterministic proof that the unique constraint is real, with no race to
-     * depend on: bypass the store's pre-check and insert the same key twice.
-     *
-     * <p>The concurrent test below is the interesting one, but it can pass for the
-     * wrong reason — if the first thread commits before the others reach the
-     * pre-check, they short-circuit and the constraint is never exercised. This
-     * test cannot.
-     */
     @Test
     void a_repeat_insert_of_the_same_key_is_refused_by_the_database() {
         funding.fund(debtor, new BigDecimal("1000.00"), USD);
@@ -166,15 +143,6 @@ class LedgerIntegrationTest {
         assertEquals(90_000L, accounts.availableMinorUnits(debtor), "charged once");
     }
 
-    /**
-     * <b>The M2 idempotency test.</b> Eight threads submit the same payment at the
-     * same moment. Exactly one ledger effect must exist and every caller must
-     * receive the same payment id.
-     *
-     * <p>Check-then-insert cannot pass this: under READ COMMITTED neither
-     * transaction can see the other's uncommitted row, so all eight would find the
-     * key free and all eight would insert.
-     */
     @Test
     void concurrent_submissions_produce_one_winner_and_seven_clean_replays() throws Exception {
         funding.fund(debtor, new BigDecimal("10000.00"), USD);
@@ -196,10 +164,6 @@ class LedgerIntegrationTest {
         assertEquals(950_000L, accounts.availableMinorUnits(debtor), "charged exactly once");
     }
 
-    /**
-     * The dangerous case. Returning the first payment's result for a different
-     * second payment would tell the caller a payment succeeded that was never made.
-     */
     @Test
     void reusing_a_key_for_a_different_payment_is_refused() {
         funding.fund(debtor, new BigDecimal("2000.00"), USD);
@@ -211,8 +175,6 @@ class LedgerIntegrationTest {
 
         assertEquals(190_000L, accounts.availableMinorUnits(debtor), "the second payment must not post");
     }
-
-    // ------------------------------------------- available funds / optimistic lock
 
     @Test
     void a_payment_beyond_the_available_balance_is_refused() {
@@ -235,22 +197,6 @@ class LedgerIntegrationTest {
         assertEquals(0L, accounts.availableMinorUnits(debtor));
     }
 
-    /**
-     * <b>The reason {@code accounts.version} exists.</b> Eight threads each try to
-     * spend the entire balance under eight <em>different</em> idempotency keys — so
-     * the unique constraint offers no protection here at all. Each payment is
-     * individually affordable; together they are eight times the balance.
-     *
-     * <p>Without the forced version increment this is a textbook lost update: every
-     * thread reads the same sufficient balance, every thread decides the payment is
-     * affordable, and several commit. Under READ COMMITTED nothing stops them,
-     * because no row was modified that anyone could conflict on — which is exactly
-     * why a plain optimistic lock would not have helped either.
-     *
-     * <p>The assertion is the invariant that matters — the account cannot go
-     * negative — rather than a count of which exception each loser saw, which is
-     * timing-dependent.
-     */
     @Test
     void concurrent_payments_can_never_overdraw_the_account() throws Exception {
         funding.fund(debtor, new BigDecimal("100.00"), USD);
@@ -263,9 +209,6 @@ class LedgerIntegrationTest {
         assertEquals(7, outcomes.failures().size());
         assertEquals(0L, accounts.availableMinorUnits(debtor), "the account must land at exactly zero");
 
-        // Every refusal must be a considered one: either the version check lost the
-        // race, or the funds check saw the money already gone. Anything else means
-        // something failed for a reason the design did not account for.
         outcomes.failures().forEach(failure -> assertTrue(
                 failure instanceof OptimisticLockingFailureException
                         || failure instanceof InsufficientFundsException,
@@ -274,15 +217,6 @@ class LedgerIntegrationTest {
         assertTrue(reconciliation.reconcile().balanced());
     }
 
-    /**
-     * A third, distinct concurrency hazard, found by the test above failing for
-     * the wrong reason on the first attempt: this test's {@code creditor} was
-     * never funded, so eight threads paying eight <em>different</em> new
-     * debtors to that one new, not-yet-existing creditor all raced to create the
-     * same account row. That has nothing to do with idempotency or with funds —
-     * it is any two first-time payments to a shared new counterparty, arriving
-     * together. {@link AccountProvisioner} exists because of this test.
-     */
     @Test
     void concurrent_first_payments_to_a_new_shared_counterparty_do_not_collide() throws Exception {
         int threads = 8;
@@ -333,8 +267,6 @@ class LedgerIntegrationTest {
 
     @Test
     void the_settlement_account_is_exempt_from_the_funds_check() {
-        // Funding draws against the bank's own position, which must be allowed to
-        // run negative — otherwise the very first funding entry would be refused.
         funding.fund(debtor, new BigDecimal("100.00"), USD);
 
         assertTrue(accounts.balanceMinorUnits(FundingService.SETTLEMENT_ACCOUNT_PREFIX + "USD") > 0,
@@ -350,17 +282,6 @@ class LedgerIntegrationTest {
                 () -> store.record(instruction("100", "JPY"), freshKey()));
     }
 
-    // ------------------------------------------------------- database invariants
-
-    /**
-     * Proves the database refuses an unbalanced entry rather than trusting the
-     * application to always build one correctly.
-     *
-     * <p>Note <em>where</em> it fails: the single posting inserts happily, because
-     * the trigger is DEFERRABLE INITIALLY DEFERRED. The error arrives at COMMIT.
-     * That deferral is what makes the invariant enforceable at all — a non-deferred
-     * check would reject the first leg of every valid entry.
-     */
     @Test
     void the_database_refuses_a_one_legged_entry_at_commit() {
         var transaction = new TransactionTemplate(transactionManager);
@@ -377,9 +298,6 @@ class LedgerIntegrationTest {
         assertEquals(0L, accounts.balanceMinorUnits(debtor), "nothing may have been committed");
     }
 
-    // ----------------------------------------------------------- reconciliation
-
-    /** The brief's bar: reconciliation green over a large synthetic run. */
     @Test
     void reconciliation_is_green_over_ten_thousand_synthetic_payments() {
         int payments = 10_000;
@@ -420,11 +338,8 @@ class LedgerIntegrationTest {
         assertEquals(postings.countPostings(), reconciliation.reconcile().postingCount());
     }
 
-    // -------------------------------------------------------------------- helpers
-
     private record Outcomes(List<StoredPayment> results, List<Throwable> failures) {}
 
-    /** Releases every thread at the same instant, so the race is a real one. */
     private Outcomes runConcurrently(int threads, Callable<StoredPayment> action) throws Exception {
         var startTogether = new CountDownLatch(1);
         var finished = new CountDownLatch(threads);

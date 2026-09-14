@@ -21,17 +21,8 @@ def _build_app(model_dir: Path) -> FastAPI:
     predictor = FraudPredictor(model_dir)
     redis_client = fakeredis.FakeStrictRedis(decode_responses=True)
     engineer = FeatureEngineer(velocity=VelocityFeatures(redis_client), history=AccountHistory(redis_client))
-    # The route reads app.state.scoring_service (see routes.py) - the same
-    # object main.py's lifespan builds and shares with the Kafka consumer.
     app.state.scoring_service = ScoringService(engineer=engineer, predictor=predictor)
-    # Also exposed directly, test-only: production code never reads this -
-    # it exists so tests can inspect Redis state white-box (see
-    # test_a_second_call_sees_the_first_as_prior_velocity below) without
-    # reaching into ScoringService's private fields.
     app.state.feature_engineer = engineer
-    # Mirrors main.py's lifespan when ATLAS_NEO4J_URI is unset (see
-    # config.py) - GET /rings must degrade cleanly, not KeyError, when this
-    # test app (like most of this test suite) never configures Neo4j at all.
     app.state.neo4j_driver = None
     return app
 
@@ -73,13 +64,6 @@ def test_score_returns_probability_and_exactly_three_top_features(tiny_model_dir
 
 
 def test_a_second_call_sees_the_first_as_prior_velocity(tiny_model_dir: Path) -> None:
-    """The API-level version of the ordering test in
-    test_feature_consistency.py: record must happen, and must happen after
-    scoring, through the real HTTP path, or repeated calls would never show
-    rising velocity. Whether velocity ends up as a top-3 SHAP feature depends
-    on the model, so this asserts the underlying state directly rather than
-    hoping it surfaces in the response.
-    """
     app = _build_app(tiny_model_dir)
     client = TestClient(app)
 
@@ -110,12 +94,6 @@ def test_rejects_an_hour_of_day_outside_0_23(tiny_model_dir: Path) -> None:
 
 
 def test_rings_reports_disabled_when_neo4j_is_not_configured(tiny_model_dir: Path) -> None:
-    """The M6-optional analogue of the Kafka consumer's own optional-startup
-    behaviour (see main.py's lifespan): most of this test suite, like most
-    real deployments without M6 enabled, never configures Neo4j at all, and
-    GET /rings must say so explicitly rather than error or silently lie
-    about being enabled.
-    """
     client = TestClient(_build_app(tiny_model_dir))
 
     response = client.get("/rings")

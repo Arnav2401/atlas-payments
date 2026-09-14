@@ -1,32 +1,3 @@
-"""Consumes `payments.submitted`, scores each payment via the same
-`ScoringService` the HTTP `/score` endpoint uses, and publishes the verdict to
-`payments.decisioned`.
-
-This is the asynchronous half of the pipeline the brief's M4 module describes:
-the outbox poller (Java) durably queues an event; this loop is the "Fraud
-Service consumes payments.submitted, publishes payments.decisioned" box in
-the architecture diagram. It runs alongside, not instead of, the synchronous
-HTTP path — see the atlas-payments README's DECISION 4 for why both exist.
-
-## Delivery semantics, and why this loop is idempotent-safe rather than
-## idempotent-guaranteeing
-
-Kafka delivery here is at-least-once on both hops of the pipeline (outbox to
-`payments.submitted`, and this consumer's publish to `payments.decisioned` —
-see the Java side's OutboxPoller and PaymentDecisionConsumer javadoc for the
-matching argument there). A crash after this loop publishes a decision but
-before it commits its consumed offset means the SAME payment gets scored and
-published again on restart. This loop does not try to prevent that — it
-cannot, on its own, since offset commit and Kafka publish are not one atomic
-operation any more than the ledger commit and outbox publish are on the Java
-side. What makes a duplicate harmless is downstream: the Java
-PaymentDecisionConsumer's unique constraint on payment_id. Re-scoring the same
-payment twice is wasted work, not a correctness bug — the model is a pure
-function of its inputs (modulo the velocity features' own state, which a
-double-score would double-count in Redis; a known, accepted cost of this
-design, not a hidden one).
-"""
-
 from __future__ import annotations
 
 import json
@@ -64,23 +35,11 @@ class OutboxConsumer:
             SUBMITTED_TOPIC,
             bootstrap_servers=self._bootstrap_servers,
             group_id=CONSUMER_GROUP_ID,
-            # A first-ever startup for this group must see any backlog
-            # already on the topic, not silently skip straight to new
-            # messages - the same "earliest" convention application.yaml
-            # uses on the Java consumer side.
             auto_offset_reset="earliest",
-            # Manual commit, after this loop has actually done something with
-            # a message (scored it, or routed it to the DLQ) - matching the
-            # Java side's enable-auto-commit: false. Auto-commit would let the
-            # broker consider a message "done" before this process had, which
-            # would reopen exactly the loss window the outbox pattern exists
-            # to close, just on this hop instead of the first one.
             enable_auto_commit=False,
         )
         self._producer = AIOKafkaProducer(
             bootstrap_servers=self._bootstrap_servers,
-            # Mirrors the Java producer's acks=all: do not consider a publish
-            # done until the broker has durably written it.
             acks="all",
         )
         await self._consumer.start()
@@ -89,34 +48,13 @@ class OutboxConsumer:
         logger.info("OutboxConsumer started, subscribed to %s", SUBMITTED_TOPIC)
 
     async def _ensure_topics_exist(self) -> None:
-        """Explicit topic creation, not reliance on Kafka's own
-        auto-create-on-first-produce behaviour.
-
-        <p>Found the hard way: relying on auto-creation is a real race, not a
-        theoretical one — the first publish to a not-yet-existing topic can
-        genuinely fail ("Topic ... not found in cluster metadata") while the
-        broker propagates the new topic's metadata, and a naive retry-free
-        send can lose that first message. The Java side never has this
-        problem because Spring Boot's KafkaAdmin creates every declared
-        {@code NewTopic} bean at application startup, before any producer or
-        consumer touches the broker — this method is the Python equivalent of
-        that, done explicitly for the same reason rather than left to chance.
-        """
         admin = AIOKafkaAdminClient(bootstrap_servers=self._bootstrap_servers)
         await admin.start()
         try:
-            # Created one at a time, not as a single batch call: a batch
-            # create_topics fails as a unit if even one topic already exists,
-            # which would be the common case on every restart after the
-            # first. Per-topic handling means "two of three already exist" is
-            # not an error, only a genuinely failed creation is.
             for topic in (SUBMITTED_TOPIC, DECISIONED_TOPIC, DLQ_TOPIC):
                 try:
                     await admin.create_topics([NewTopic(name=topic, num_partitions=3, replication_factor=1)])
                 except TopicAlreadyExistsError:
-                    # Another instance of this service (or the Java side, for
-                    # payments.submitted) created it first - the
-                    # postcondition ("the topic exists") already holds.
                     pass
         finally:
             await admin.close()
@@ -129,14 +67,6 @@ class OutboxConsumer:
             await self._producer.stop()
 
     async def run(self) -> None:
-        """The consume loop. `stop()` closing the underlying consumer out from
-        under this iteration is the normal aiokafka shutdown signal, not a
-        polled flag — caught here and treated as a clean exit only when
-        `_running` is already False (i.e. shutdown was actually requested);
-        anything else propagates, since a consumer that stops itself
-        unexpectedly is a real failure this process should not silently
-        swallow.
-        """
         assert self._consumer is not None and self._producer is not None
         try:
             async for record in self._consumer:
@@ -157,13 +87,7 @@ class OutboxConsumer:
 
         try:
             decision = self._score(event)
-        except Exception as processing_error:  # noqa: BLE001 - deliberately broad, see module docstring
-            # A processing failure that is NOT a parse failure (a bug in
-            # feature engineering, Redis unreachable) is different from a
-            # poison message: the message itself is well-formed, so retrying
-            # it after a fix might succeed. It still goes to the DLQ rather
-            # than blocking this partition forever, but the distinction is
-            # worth preserving in the log for whoever investigates it.
+        except Exception as processing_error:  # noqa: BLE001 - one bad message must not kill the consumer
             logger.exception("processing failed for payment_id=%s: %s", event.payment_id, processing_error)
             await self._to_dlq(record, reason=str(processing_error))
             await self._consumer.commit()

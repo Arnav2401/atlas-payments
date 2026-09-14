@@ -4,18 +4,6 @@ from pydantic import BaseModel, Field
 
 
 class ScoreRequest(BaseModel):
-    """The Java payment API's own field names (endToEndId, debtorAccount, ...),
-    not PaySim's column names. PaySim's schema shaped the training data;
-    this service's wire contract is shaped by its actual caller.
-
-    `debtor_balance_before` / `creditor_balance_before` are the ledger's own
-    pre-transaction balances — the same values LedgerWriter reads for the M2
-    funds check — not something this service infers. Passing them explicitly
-    means fraud scoring and the funds check see the identical balance state
-    for the same payment, rather than two components independently guessing
-    at "the balance" from data that could disagree.
-    """
-
     end_to_end_id: str
     amount: float = Field(gt=0)
     is_cash_out: bool

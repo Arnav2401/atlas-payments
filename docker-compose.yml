@@ -5,20 +5,13 @@ services:
     environment:
       POSTGRES_DB: atlas
       POSTGRES_USER: atlas
-      # Local development only. See atlas.security.jwt-secret below for the
-      # contrast — that one is actually security-critical and has no default
-      # anywhere, in code or here.
+      # Local development only.
       POSTGRES_PASSWORD: atlas
     ports:
       - "5432:5432"
     volumes:
-      # postgres:18 changed its expected layout: earlier images stored data
-      # directly at /var/lib/postgresql/data; 18+ wants the volume mounted at
-      # the parent /var/lib/postgresql and creates its own major-version
-      # subdirectory below it (see the docker-library/postgres image's own
-      # startup message). Mounting at the old sub-path here made the
-      # container refuse to start against a pre-18-shaped volume — caught
-      # only once `docker compose up` was actually run end-to-end.
+      # postgres:18 wants the volume at the parent path and creates its own
+      # major-version subdirectory; mounting .../data directly breaks startup.
       - atlas-pgdata:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U atlas -d atlas"]
@@ -37,17 +30,14 @@ services:
       timeout: 3s
       retries: 10
 
-  # M6 (optional): the counterparty graph, for Louvain community detection and
-  # centrality-based mule identification - see services/fraud-service/graph/.
-  # NEO4J_PLUGINS downloads the free Graph Data Science library (Community
-  # Edition-compatible) on first startup; unrestricted.procedures allowlists
-  # its `gds.*` Cypher procedures, which Neo4j blocks by default as a
-  # defence-in-depth measure against arbitrary plugin code.
+  # M6 (optional): the counterparty graph. NEO4J_PLUGINS pulls the Graph Data
+  # Science library on first start; Neo4j blocks its gds.* procedures until
+  # they are explicitly allowlisted.
   neo4j:
     image: neo4j:5-community
     container_name: atlas-neo4j
     environment:
-      # Local development only, same reasoning as the Postgres password above.
+      # Local development only.
       NEO4J_AUTH: neo4j/atlas-demo-password
       NEO4J_PLUGINS: '["graph-data-science"]'
       NEO4J_dbms_security_procedures_unrestricted: gds.*
@@ -63,10 +53,8 @@ services:
       retries: 30
       start_period: 30s
 
-  # KRaft mode, single broker, no ZooKeeper - the apache/kafka image runs
-  # Kafka's own consensus (KRaft) rather than depending on a second
-  # coordination service, which is what keeps this to one container instead
-  # of two for a build at this scale.
+  # KRaft mode, single broker: Kafka runs its own consensus, so there is no
+  # second ZooKeeper container to stand up.
   kafka:
     image: apache/kafka:latest
     container_name: atlas-kafka
@@ -75,25 +63,10 @@ services:
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
-      # Two listeners, advertised differently depending on who is asking —
-      # not one, which is the bug this replaced. PLAINTEXT (9092) is for
-      # whoever reaches Kafka from the HOST machine (a local test script,
-      # kafka-console-consumer run from your own terminal); INTERNAL (29092)
-      # is for other containers on this compose network (fraud-service,
-      # payment-api).
-      #
-      # The bug, found by actually running payment-api against this compose
-      # file for the first time rather than assuming it worked: with a
-      # single PLAINTEXT listener advertised as `localhost:9092`, Kafka's
-      # metadata response tells EVERY client — including one running inside
-      # another container — "reconnect to localhost:9092". From inside the
-      # payment-api container, `localhost` is payment-api's own network
-      # namespace, not Kafka's, so every request after the initial bootstrap
-      # failed silently in the background. It never surfaced during M4
-      # development because every manual test either ran on the host
-      # (where `localhost:9092` genuinely reaches the port-mapped
-      # container) or used `docker exec` directly inside the Kafka container
-      # itself — neither path exercises container-to-container traffic.
+      # Two listeners, because Kafka's metadata response hands clients an
+      # address to reconnect to. PLAINTEXT (9092) is advertised to the host;
+      # INTERNAL (29092) to other containers. With only the first, a container
+      # client is told "reconnect to localhost", which is its own namespace.
       KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
@@ -111,33 +84,24 @@ services:
   fraud-service:
     build: services/fraud-service
     container_name: atlas-fraud-service
-    # Needs services/fraud-service/models/model.json to already exist locally
-    # — see the Dockerfile and README for why this cannot be trained inside
-    # the build itself. `docker compose up fraud-service` fails fast at
-    # startup rather than serving with no model if that step was skipped.
+    # Needs services/fraud-service/models/model.json to exist first; the image
+    # cannot train it (see README). Startup fails fast rather than serving
+    # without a model.
     depends_on:
       redis:
         condition: service_healthy
       kafka:
         condition: service_healthy
-      # Not service_healthy: Neo4j's own healthcheck only passes once the GDS
-      # plugin has finished downloading (30s+ on first pull), and M6 is
-      # optional - fraud-service must not block its own startup on a
-      # dependency it can run without. GraphDatabase.driver() in main.py is
-      # lazy (no eager connection), so this ordering hint (container started,
-      # not yet necessarily ready) is enough; a GET /rings before Neo4j is
-      # actually reachable fails that one request, not the whole service.
+      # Started, not healthy: Neo4j's healthcheck waits on the GDS plugin
+      # download, and M6 is optional. The driver connects lazily, so an early
+      # GET /rings fails that one request rather than startup.
       neo4j:
         condition: service_started
     environment:
       FRAUD_REDIS_URL: redis://redis:6379/0
-      # kafka:29092, not :9092 - the INTERNAL (container-to-container)
-      # listener. See the kafka service's own comment above for why the two
-      # are not interchangeable.
+      # The INTERNAL listener - see the kafka service above.
       ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
-      # M6 (optional): see config.py - unset would mean GET /rings reports
-      # disabled. Left set here because this compose file already brings up
-      # neo4j; a deployment without M6 would simply drop both.
+      # Unset would mean GET /rings reports itself disabled.
       ATLAS_NEO4J_URI: bolt://neo4j:7687
       ATLAS_NEO4J_USER: neo4j
       ATLAS_NEO4J_PASSWORD: atlas-demo-password
@@ -167,9 +131,7 @@ services:
       ATLAS_DB_PASSWORD: atlas
       ATLAS_KAFKA_BOOTSTRAP_SERVERS: kafka:29092
       ATLAS_FRAUD_SERVICE_URL: http://fraud-service:8001
-      # No default in application.yaml, and none here either — .env.example
-      # documents generating a real one. docker-compose reads a .env file at
-      # the repo root automatically if present; .env itself is gitignored.
+      # No default anywhere; compose reads it from the gitignored .env.
       ATLAS_JWT_SECRET: ${ATLAS_JWT_SECRET}
     ports:
       - "8080:8080"
@@ -195,12 +157,8 @@ services:
     build:
       context: ./ops-console
       args:
-        # Baked into the static bundle at build time (see the Dockerfile's own
-        # comment on why this can't be a runtime `environment:` entry like
-        # every other service here gets) - localhost:8080, not
-        # payment-api:8080, because this URL is fetched by the viewer's own
-        # browser on the host, which cannot resolve compose's internal
-        # service DNS names at all.
+        # Baked into the static bundle at build time. localhost, not
+        # payment-api: the browser on the host resolves this, not compose.
         VITE_API_BASE_URL: http://localhost:8080
     container_name: atlas-ops-console
     ports:
@@ -213,8 +171,7 @@ services:
     image: grafana/grafana:latest
     container_name: atlas-grafana
     environment:
-      # Local demo only - not exposed outside this compose network by
-      # default, and changed on first login by Grafana itself if it were.
+      # Local demo only.
       GF_SECURITY_ADMIN_PASSWORD: atlas-demo
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer

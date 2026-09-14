@@ -9,9 +9,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R04 — endToEndId present, non-blank, bounded, safe to log. */
 class EndToEndIdRuleTest {
-
     private final EndToEndIdRule rule = new EndToEndIdRule();
 
     @Test
@@ -32,7 +30,6 @@ class EndToEndIdRuleTest {
         assertTrue(rule.check(PaymentInstructionRequests.valid().endToEndId(null).build()).isPresent());
     }
 
-    /** Edge: exactly at the ISO 20022 bound, and one over. */
     @Test
     void edge_boundary_is_inclusive_at_35_characters() {
         String exactly35 = "A".repeat(EndToEndIdRule.MAX_LENGTH);
@@ -43,10 +40,6 @@ class EndToEndIdRuleTest {
         assertTrue(rule.check(PaymentInstructionRequests.valid().endToEndId(thirtySix).build()).isPresent());
     }
 
-    /**
-     * Edge, and the security-relevant case: endToEndId is the M5 log correlation
-     * key, so a newline in it would let a caller forge log lines.
-     */
     @ParameterizedTest
     @ValueSource(strings = {"ABC\nDEF", "ABC\rDEF", "ABC\u0000DEF", "ABC<script>", "ABC;DROP"})
     void edge_rejects_characters_that_would_be_unsafe_in_a_log_line(String id) {

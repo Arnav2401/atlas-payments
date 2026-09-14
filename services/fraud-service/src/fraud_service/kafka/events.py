@@ -1,9 +1,3 @@
-"""Wire schemas for the two topics this service touches. Field names mirror
-the Java side exactly (com.atlas.payments.outbox.PaymentSubmittedEvent /
-com.atlas.payments.fraud.PaymentDecisionedEvent) — same publisher-and-consumer
-pair as the HTTP schemas in api/schemas.py, same snake_case convention.
-"""
-
 from __future__ import annotations
 
 from pydantic import BaseModel

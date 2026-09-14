@@ -5,23 +5,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import java.math.BigDecimal;
 import java.util.List;
 
-/**
- * The fraud service's own wire schema — snake_case, matching
- * services/fraud-service/src/fraud_service/api/schemas.py exactly — kept
- * separate from {@link FraudAssessmentRequest}/{@link FraudAssessment} on
- * purpose: this class is the HTTP contract with an external service, and the
- * two domain types are this API's own vocabulary. Collapsing them into one
- * type would mean a schema change in the Python service's JSON silently
- * becomes a change to this API's internal model.
- *
- * <p>Every field is {@code @JsonProperty}-annotated to its snake_case name
- * rather than configuring the shared {@code ObjectMapper} to snake_case
- * globally — this API's own contract with its own callers is camelCase (see
- * M1's {@code PaymentInstructionRequest}), and a global naming strategy
- * change would silently rewrite that contract too.
- */
 final class ScoreApiDto {
-
     private ScoreApiDto() {
     }
 

@@ -10,9 +10,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R05 — agent BICs must match ISO 9362. */
 class AgentBicFormatRuleTest {
-
     private final AgentBicFormatRule rule = new AgentBicFormatRule();
 
     @ParameterizedTest
@@ -39,10 +37,6 @@ class AgentBicFormatRuleTest {
         assertTrue(rule.check(request).isPresent(), bic + " should be rejected");
     }
 
-    /**
-     * Edge: the rule covers two fields, so a failure must say which agent.
-     * This is the test that would catch the rule reporting the wrong field.
-     */
     @Test
     void edge_names_the_offending_agent() {
         var request = PaymentInstructionRequests.valid()
@@ -56,11 +50,6 @@ class AgentBicFormatRuleTest {
         assertEquals("creditorAgent", reason.field());
     }
 
-    /**
-     * Edge, and a documented cost: when both agents are malformed only the
-     * debtor is reported, so fixing the request takes two round trips. If you
-     * split this into two RuleIds, this test should change.
-     */
     @Test
     void edge_reports_only_the_first_failure_when_both_agents_are_malformed() {
         var request = PaymentInstructionRequests.valid()

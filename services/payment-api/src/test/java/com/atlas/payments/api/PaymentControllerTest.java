@@ -28,30 +28,10 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-/**
- * The HTTP contract: status codes, response shapes, and what never reaches the
- * store.
- *
- * <p>{@code addFilters = false} deliberately — this class is not about
- * authentication, and M5 makes {@code POST /payments} require it (see
- * SecurityConfig: authenticated by default, permitted only where explicitly
- * named). Leaving Spring Security's filters active here would fail every
- * request with 401 before it ever reached the validation/rejection logic this
- * class exists to test, which is a different property from the one this class
- * checks. The security boundary itself — no token, wrong role, right role —
- * is {@code PaymentAuthorizationTest}'s job, against the real filter chain.
- */
 @WebMvcTest(PaymentController.class)
 @AutoConfigureMockMvc(addFilters = false)
 @Import(ValidationConfig.class)
 class PaymentControllerTest {
-
-    /**
-     * Computed rather than hard-coded. ValidationConfig supplies a real
-     * Clock.systemUTC(), so a literal date here would silently start failing R08
-     * once wall-clock time passed it. R08's own boundaries are asserted against a
-     * fixed Clock in SettlementDateWindowRuleTest; this test is about HTTP.
-     */
     private static final String SETTLEMENT_DATE =
             LocalDate.now(ZoneOffset.UTC).plusDays(7).toString();
 
@@ -76,16 +56,9 @@ class PaymentControllerTest {
     @MockitoBean
     private PaymentStore paymentStore;
 
-    /** A real bean would need a MeterRegistry; mocked here for the same reason FraudClient is. */
     @MockitoBean
     private PaymentMetrics paymentMetrics;
 
-    /**
-     * Mocked, never the real HTTP client: a @WebMvcTest slice does not start a
-     * fraud service to call, and should not need one to assert the HTTP
-     * contract this class exists to test. The circuit-breaker/fallback
-     * behaviour itself is proven for real in FraudClientResilienceTest.
-     */
     @MockitoBean
     private FraudClient fraudClient;
 
@@ -108,7 +81,6 @@ class PaymentControllerTest {
         verify(paymentStore).record(any(), eq("key-1"));
     }
 
-    /** DECISION 1: a rejection is a decision, so it rides on 200 with a status discriminator. */
     @Test
     void returns_200_with_rejected_status_and_the_published_reason_code() throws Exception {
         String negativeAmount = VALID_BODY.replace("100.00", "-100.00");
@@ -124,7 +96,6 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.rejections[0].field").value("instructedAmount"));
     }
 
-    /** The invariant that makes the sealed ValidationOutcome worth having. */
     @Test
     void a_rejected_payment_never_reaches_the_store() throws Exception {
         mockMvc.perform(post("/payments")
@@ -153,7 +124,6 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.rejections[2].code").value("ATLAS-V009"));
     }
 
-    /** A malformed body produced no decision, so it is a 400 in a different shape. */
     @Test
     void malformed_json_is_a_400_with_an_error_envelope_not_a_rejection() throws Exception {
         mockMvc.perform(post("/payments")
@@ -165,7 +135,6 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.status").doesNotExist());
     }
 
-    /** An unparseable date is a shape failure, not a rule failure — R08 never runs. */
     @Test
     void an_unparseable_date_is_a_shape_failure() throws Exception {
         mockMvc.perform(post("/payments")
@@ -195,7 +164,6 @@ class PaymentControllerTest {
                 .andExpect(jsonPath("$.code").value("ATLAS-E002"));
     }
 
-    /** Jackson's message names internal classes and echoes bad values. It must not leak. */
     @Test
     void the_error_response_does_not_leak_jackson_internals() throws Exception {
         String body = mockMvc.perform(post("/payments")

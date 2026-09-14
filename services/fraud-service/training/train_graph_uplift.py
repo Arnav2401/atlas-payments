@@ -1,20 +1,3 @@
-"""M6's measured claim: does adding graph features to the M3 model change PR-AUC.
-
-    # 1. Build the training-period graph (graph/build_graph.py) and compute
-    #    its Louvain/degree/PageRank properties (this script does the latter
-    #    itself, via graph.graph_features.compute_and_write_algorithms).
-    # 2. uv run python -m training.train_graph_uplift --data /path/to/paysim.csv
-
-Deliberately a separate script from training/train.py, not a --graph-features
-flag bolted onto it: train.py's own output (models/model.json,
-models/metrics.json) is what the main README's model metrics table and the
-production fraud-service actually serve, and that baseline must stay
-reproducible by that exact, unmodified command. This script re-derives its
-own baseline internally (below) as a same-run sanity check that the
-comparison is apples-to-apples, rather than diffing against a committed
-metrics.json that could drift out of sync with a code change elsewhere.
-"""
-
 from __future__ import annotations
 
 import argparse

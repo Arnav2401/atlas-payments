@@ -1,13 +1,3 @@
-"""Measures feature-computation latency against a REAL Redis, not fakeredis.
-
-fakeredis is in-process Python with no network round trip at all — using it
-here would report a number with no relationship to what the 20ms p99 budget
-actually has to survive (a real socket, real serialisation, a real container
-boundary in docker-compose). This test is skipped, not failed, when no Redis
-is reachable, so the rest of the suite stays runnable without Docker; see
-README for how to run it for real.
-"""
-
 from __future__ import annotations
 
 import time
@@ -42,10 +32,6 @@ def test_feature_computation_p99_under_20ms(real_redis) -> None:
             amount=float(100 + i),
             hour_of_day=i % 24,
             is_cash_out=(i % 2 == 0),
-            # A mix of brand-new and repeat accounts, so the benchmark
-            # exercises both the cheap cold-start path and the path that
-            # actually reads accumulated Redis state - not just whichever one
-            # is faster.
             debtor_account=f"BENCH-ORIG-{i % 50}",
             creditor_account=f"BENCH-DEST-{i % 10}",
             debtor_balance_before=10_000.0,

@@ -1,18 +1,3 @@
-"""The Python-side half of M4's pipeline: OutboxConsumer actually consuming,
-scoring, and publishing against a real broker.
-
-Uses testcontainers-python's default Kafka image (Confluent cp-kafka), not
-the apache/kafka native-KRaft image the Java side's OutboxKafkaIntegrationTest
-uses — a deliberate, stated difference, not an oversight. The Java test
-already proves the brief's specific claim (single-broker, KRaft, no
-ZooKeeper) end to end; what THIS test needs to prove is narrower and
-Python-specific: does aiokafka's async consume/score/publish loop actually
-work against a real broker, including the poison-message path. Kafka's wire
-protocol is what aiokafka talks to, not which distribution built the broker,
-so a different (but real) Kafka image proves the same thing this test is
-actually responsible for proving.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -72,14 +57,6 @@ async def _produce(kafka_container, topic: str, key: bytes | None, value: bytes)
 
 
 async def _consume_matching(kafka_container, topic: str, group_suffix: str, key: bytes, timeout: float = 20.0):
-    """Filtered by key, not "the next record on the topic" — the topic and
-    its group-id namespace are shared across every test function in this
-    module (one module-scoped Kafka container), so a fresh consumer group
-    with auto_offset_reset=earliest legitimately sees every prior test's
-    messages too, not just this test's own. Same fix as the Java side's
-    OutboxKafkaIntegrationTest, same underlying reason: no per-test topic
-    isolation, so tests isolate themselves by key instead.
-    """
     consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=kafka_container.get_bootstrap_server(),
@@ -134,18 +111,11 @@ async def test_a_malformed_message_is_routed_to_the_dlq_not_dropped_or_crashed_o
     record = await _consume_matching(kafka_container, DLQ_TOPIC, "dlq-check", key=b"poison")
 
     assert record.value == b"{ not valid json at all"
-    # Header keys come back as str, not bytes, even though values stay bytes
-    # (unlike the topic/message key, which are bytes throughout) - confirmed
-    # against the real client rather than assumed.
     headers = dict(record.headers)
     assert headers["x-original-topic"] == SUBMITTED_TOPIC.encode()
 
 
 async def test_a_valid_message_after_a_poison_one_is_still_processed(kafka_container, consumer):
-    """The point of the DLQ: one bad message must not stop the ones behind
-    it. Publishes poison then valid, back to back, and asserts the valid
-    one's decision still arrives - proving the consume loop kept running.
-    """
     await _produce(kafka_container, SUBMITTED_TOPIC, key=b"poison-2", value=b"also not json")
     payment_id = "test-payment-after-poison"
     await _produce(kafka_container, SUBMITTED_TOPIC, key=payment_id.encode(), value=_submitted_payload(payment_id))

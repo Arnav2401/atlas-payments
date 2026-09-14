@@ -14,19 +14,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
-/**
- * One financial event. The unit of atomicity: either all of its postings exist
- * or none do, and the database refuses to commit it unless they sum to zero.
- */
 @Entity
 @Table(name = "journal_entries")
 public class JournalEntryEntity {
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    /** The identifier surfaced to API callers as {@code paymentId}. */
     @Column(name = "external_id", nullable = false, unique = true)
     private UUID externalId;
 

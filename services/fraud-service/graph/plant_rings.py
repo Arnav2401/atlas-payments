@@ -1,34 +1,3 @@
-"""Plants synthetic fraud rings into the graph build_graph.py already loaded.
-
-    uv run python -m graph.plant_rings
-
-<h2>Why planted, not found</h2>
-
-PaySim's own fraud-generation mechanism (see docs/sources.md and
-training/features.py's module docstring) is a single-hop pattern: pick a
-compromised account, drain it, cash out - not a coordinated multi-account
-fan-in. `dest_prior_distinct_senders_24h` (already in the M3 feature set,
-consistently top-5 by SHAP) already captures a windowed version of "many
-senders, one destination" for exactly that reason: real repeat destinations
-in this dataset are mostly ordinary busy accounts (merchants, exchanges),
-not fraud rings, so there is no naturally-occurring, *labelled* ring
-structure in PaySim to detect. The brief's own instruction here is the
-honest way to demonstrate ring detection regardless: plant a known pattern,
-then measure whether Louvain and centrality actually find it - a real,
-falsifiable claim ("N of N planted rings surfaced as their own community")
-rather than an unfalsifiable one ("this looks like it could find rings").
-
-<h2>Design of a planted ring</h2>
-
-RING_SIZES source accounts, each sending exactly one transaction to one
-shared mule account, all within a short step window - the fan-in shape the
-brief names ("twelve accounts funnelling into one mule account"). Every
-planted account ID is prefixed `RING{k}-` so ground truth is exact string
-matching, not a heuristic - graph/detect_rings.py's precision/recall numbers
-are only meaningful because there is zero ambiguity about which nodes were
-planted.
-"""
-
 from __future__ import annotations
 
 import argparse

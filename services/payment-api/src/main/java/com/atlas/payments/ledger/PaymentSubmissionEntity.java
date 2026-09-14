@@ -12,17 +12,9 @@ import jakarta.persistence.Table;
 
 import java.time.Instant;
 
-/**
- * The idempotency record: which journal entry a given submission produced.
- *
- * <p>The unique constraint on {@code idempotency_key} is the guarantee. It is
- * enforced by the database, so it holds across processes and does not depend on
- * the transaction isolation level.
- */
 @Entity
 @Table(name = "payment_submissions")
 public class PaymentSubmissionEntity {
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -30,7 +22,6 @@ public class PaymentSubmissionEntity {
     @Column(name = "idempotency_key", nullable = false, unique = true)
     private String idempotencyKey;
 
-    /** Detects a key reused with different content. */
     @Column(name = "request_fingerprint", nullable = false)
     private String requestFingerprint;
 

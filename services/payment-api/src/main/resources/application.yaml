@@ -3,54 +3,30 @@ spring:
     name: payment-api
 
   jackson:
-    # Reject unknown fields rather than silently dropping them. A caller who
-    # misspells `instructedAmount` should be told, not have the payment accepted
-    # with a null amount that R01 then blames them for.
+    # A caller who misspells instructedAmount should be told, not have the
+    # payment accepted with a null amount that R01 then blames them for.
     deserialization:
       fail-on-unknown-properties: true
 
   datasource:
     url: ${ATLAS_DB_URL:jdbc:postgresql://localhost:5432/atlas}
     username: ${ATLAS_DB_USER:atlas}
-    # M5 update on the promise this comment used to make ("removes the
-    # fallback"): it doesn't, and here is why. The brief's actual bar is "no
-    # secret appears anywhere in the repository", checked by a scanner (see
-    # .github/workflows/ci.yml) — not "no default value anywhere". A local,
-    # low-entropy default for a Postgres container that docker-compose starts
-    # unexposed on localhost is not a secret worth protecting; requiring an
-    # operator to set it anyway would just make `docker compose up` stop
-    # being one command for no security benefit. Compare atlas.security.jwt-secret
-    # below, which has NO default, deliberately — that one actually is
-    # security-critical, since anyone who can read it can forge a valid token.
+    # Local-only default, kept so `docker compose up` stays one command.
+    # Contrast atlas.security.jwt-secret below, which has no default at all.
     password: ${ATLAS_DB_PASSWORD:atlas}
     hikari:
-      # Spring Boot's own default (10) is what shipped here through M1-M4,
-      # and it held up fine under every test in this repo — until the first
-      # k6 run in load-test/payments-load-test.js at 20 concurrent VUs, which
-      # made 1% of requests fail with a 30s HikariPool timeout. The pool's own
-      # exception said exactly why: "active=10, idle=0, waiting=18" — every
-      # connection in use, 18 requests queued behind them, some unlucky
-      # enough to still be waiting when Hikari's 30s connectionTimeout fired.
-      # open-in-view is already false (see below), so a connection is held
-      # only for the ledger write + outbox insert inside PaymentStore.record's
-      # own @Transactional method, not for the synchronous fraud-service HTTP
-      # call after it — this is purely "the pool's concurrency ceiling is
-      # lower than the offered load," not a leak. 20 is not a formula, it is
-      # this repo's own load test's own VU count made explicit, so the two
-      # numbers are no longer coincidentally different by luck of one k6 run.
+      # Boot's default of 10 held up until the first 20-VU k6 run, where 1% of
+      # requests died on a 30s pool timeout ("active=10, idle=0, waiting=18").
+      # Matched to the load test's own VU count.
       maximum-pool-size: 20
 
   jpa:
     hibernate:
-      # Flyway owns the schema; Hibernate must never touch it. Anything other
-      # than "validate" means the production schema is whatever Hibernate
-      # inferred from the entities - not reviewable, not versioned, not
-      # rollback-able. "validate" turns a drift between entities and migrations
-      # into a startup failure instead of a silent divergence.
+      # Flyway owns the schema. "validate" turns entity/migration drift into a
+      # startup failure instead of a silent divergence.
       ddl-auto: validate
-    # Without this, the persistence context stays open for the whole request and
-    # lazy loads fire from the view layer - which hides exactly the
-    # LazyInitializationException that tells you a fetch is missing.
+    # Keeps the persistence context from spanning the request, so a missing
+    # fetch surfaces as LazyInitializationException instead of an N+1.
     open-in-view: false
 
   flyway:
@@ -62,25 +38,17 @@ spring:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
-      # Waits for the broker's write to be acknowledged before the outbox
-      # poller's kafkaTemplate.send(...).get(...) returns successfully. Weaker
-      # acks would let the poller mark a row dispatched before the broker
-      # genuinely durable-wrote it, reopening the loss window the whole
-      # pattern exists to close.
+      # Weaker acks would let the outbox poller mark a row dispatched before the
+      # broker durably wrote it, reopening the loss window the pattern closes.
       acks: all
     consumer:
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      # Explicit, not the client default: a consumer group's first-ever read
-      # of a topic should see everything already on it, not only messages
-      # published after it first connects — relevant on a fresh restart of
-      # the decision consumer, which must not silently skip a backlog.
+      # A restarted consumer group must see the existing backlog, not just what
+      # arrives after it connects.
       auto-offset-reset: earliest
-      # Manual-equivalent via Spring Kafka's own ack-after-successful-listener
-      # behavior (the default AckMode), not enabled here explicitly beyond
-      # leaving auto-commit off implicitly through @KafkaListener's container
-      # factory — the offset commits only after onMessage returns without
-      # throwing, which is what makes a poison message NOT silently skipped.
+      # Offsets commit only after the listener returns cleanly, so a poison
+      # message is retried rather than silently skipped.
       enable-auto-commit: false
 
 server:
@@ -90,13 +58,8 @@ management:
   endpoints:
     web:
       exposure:
-        # Nothing else - actuator exposes far more than this by default
-        # (env, beans, threaddump...) and every one of those is a real
-        # information-disclosure surface if left on. health is the container
-        # healthcheck's dependency; prometheus is the scrape target. Both are
-        # permitted without a token in SecurityConfig - see that class's
-        # javadoc for why, and for what that implies about network placement
-        # in a real deployment.
+        # Actuator exposes env, beans and threaddump by default; each is an
+        # information-disclosure surface. Only these two are needed.
         include: health, prometheus
   prometheus:
     metrics:
@@ -104,13 +67,9 @@ management:
         enabled: true
   metrics:
     distribution:
-      # Needed for Prometheus's own histogram_quantile() to compute p50/p95/p99
-      # server-side from raw bucket counts, not just Micrometer's own
-      # client-computed percentiles (which cannot be aggregated correctly
-      # across multiple instances - histogram buckets can). This is the
-      # server-side measurement Grafana's dashboard reads; k6's numbers (see
-      # README) are the client-observed round trip, a different point on the
-      # same request and not expected to match exactly.
+      # Raw buckets, so Prometheus can compute percentiles server-side.
+      # Micrometer's client-side percentiles cannot be aggregated across
+      # instances; histogram buckets can.
       percentiles-histogram:
         http.server.requests: true
       slo:
@@ -122,41 +81,34 @@ atlas:
   outbox:
     poll-interval-ms: ${ATLAS_OUTBOX_POLL_INTERVAL_MS:500}
   security:
-    # NO default - see the datasource password comment above for the
-    # contrast. Generate one with: openssl rand -base64 32
+    # No default on purpose: anyone who can read this can forge a token.
+    # Generate one with: openssl rand -base64 32
     jwt-secret: ${ATLAS_JWT_SECRET}
     token-ttl-minutes: ${ATLAS_JWT_TTL_MINUTES:15}
   ops-console:
-    # Defaults cover both the Vite dev server (5173) and the docker-compose
-    # service (3002) - see SecurityConfig.corsConfigurationSource for why
-    # this is a short allowlist rather than "*".
+    # Vite dev server and the compose service. An explicit list, not "*", since
+    # a wildcard origin cannot be combined with credentialed requests.
     allowed-origins: ${ATLAS_OPS_CONSOLE_ORIGINS:http://localhost:5173,http://localhost:3002}
 
 resilience4j:
   circuitbreaker:
     instances:
       fraud-service:
-        # A sliding window of the last 10 calls, not a time window — with a
-        # payments-scale request rate a count-based window trips on genuine
-        # failure density regardless of traffic volume, where a time-based
-        # window would behave differently at 2am than at peak.
+        # Count-based, not time-based: trips on failure density regardless of
+        # whether it is 2am or peak.
         sliding-window-type: COUNT_BASED
         sliding-window-size: 10
         minimum-number-of-calls: 5
-        # Half of the window failing is the circuit's real trigger; the RestClient's
-        # own 800ms read timeout - see FraudClientConfig - is what makes a single
-        # hung call actually fail fast enough to be counted here at all.
         failure-rate-threshold: 50
+        # Paired with the RestClient's own 800ms read timeout, so a hung call
+        # fails fast enough to be counted here.
         slow-call-duration-threshold: 800ms
         slow-call-rate-threshold: 50
-        # Half-open: after this, let ONE real call through to test recovery,
-        # rather than staying open until a human intervenes.
+        # Recovers on its own rather than staying open until someone intervenes.
         wait-duration-in-open-state: 15s
         permitted-number-of-calls-in-half-open-state: 3
         automatic-transition-from-open-to-half-open-enabled: true
         register-health-indicator: true
 
-# TODO(M1): the settlement window N for R08 belongs here once you have chosen it,
-# along with the field-length bounds for R10. Putting them in config rather than
-# in the rule classes is what lets you answer "how would you version these rules?"
-# with something other than "recompile".
+# TODO: move R08's settlement window and R10's field-length bounds here, so the
+# rules can be versioned without a recompile.

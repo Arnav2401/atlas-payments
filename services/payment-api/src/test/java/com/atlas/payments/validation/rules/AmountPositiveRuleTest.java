@@ -13,9 +13,7 @@ import java.util.Optional;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R01 — instructed amount strictly positive. */
 class AmountPositiveRuleTest {
-
     private final AmountPositiveRule rule = new AmountPositiveRule();
 
     @Test
@@ -36,12 +34,6 @@ class AmountPositiveRuleTest {
         assertEquals("instructedAmount", reason.get().field());
     }
 
-    /**
-     * Edge: zero is the interesting case — it is not negative, and it is not a
-     * payment. Every spelling of zero must behave identically, which is the
-     * property that makes signum() the right operator: 0, 0.00 and -0.00 are
-     * different BigDecimal objects with different scales and the same signum.
-     */
     @ParameterizedTest
     @ValueSource(strings = {"0", "0.00", "-0.00", "0.0000"})
     void edge_every_spelling_of_zero_is_rejected(String amount) {
@@ -50,11 +42,6 @@ class AmountPositiveRuleTest {
         assertTrue(rule.check(request).isPresent(), amount + " should be rejected");
     }
 
-    /**
-     * Edge: documents the decision that R01 owns the absent case rather than
-     * deferring it to R10. If you move that responsibility, this test should
-     * fail and tell you to.
-     */
     @Test
     void edge_an_absent_amount_is_rejected_by_this_rule() {
         var request = PaymentInstructionRequests.valid().instructedAmount((BigDecimal) null).build();

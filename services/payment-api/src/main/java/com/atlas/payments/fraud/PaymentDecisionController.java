@@ -24,27 +24,9 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
-/**
- * The ops console's backend: {@code GET /payments} (list), {@code GET
- * /payments/{id}} (detail — payment, score, top SHAP features), and the
- * review-workflow actions.
- *
- * <h2>Where the brief's two roles actually diverge</h2>
- *
- * <p>{@code GET} and {@code /review} accept either role — an analyst can view
- * and request review. {@code /clear} and {@code /escalate} require {@code
- * SUPERVISOR} via {@code @PreAuthorize}, enforced by Spring Security before
- * the method body runs. An analyst-role token presented to either gets 403
- * from the framework, never reaching {@link PaymentDecisionEntity}'s own
- * {@code clear()}/{@code escalate()} — the authorization boundary and the
- * business-state boundary are two separate, independently enforced layers,
- * on purpose: even a bug that bypassed one would still be caught by the
- * other.
- */
 @RestController
 @RequestMapping("/payments")
 public class PaymentDecisionController {
-
     private final JournalEntryRepository journalEntries;
     private final PaymentDecisionRepository decisions;
     private final ObjectMapper objectMapper;
@@ -78,14 +60,24 @@ public class PaymentDecisionController {
     public ResponseEntity<List<PaymentSummaryResponse>> list(
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-
         Page<JournalEntryEntity> entries = journalEntries.findAllByOrderByBookedAtDesc(PageRequest.of(page, size));
+        if (entries.isEmpty()) {
+            return ResponseEntity.ok(List.of());
+        }
+
+        // Re-read the page with postings and accounts attached, otherwise
+        // toSummary triggers a query per entry and per posting.
+        List<Long> ids = entries.getContent().stream().map(JournalEntryEntity::getId).toList();
+        Map<Long, JournalEntryEntity> hydrated = journalEntries.findWithPostingsByIdIn(ids).stream()
+                .collect(Collectors.toMap(JournalEntryEntity::getId, e -> e));
 
         List<UUID> paymentIds = entries.getContent().stream().map(JournalEntryEntity::getExternalId).toList();
         Map<UUID, PaymentDecisionEntity> decisionsByPaymentId = decisions.findAllByPaymentIdIn(paymentIds).stream()
                 .collect(Collectors.toMap(PaymentDecisionEntity::getPaymentId, d -> d));
 
+        // Ordered by the paged query, which the IN lookup above does not preserve.
         List<PaymentSummaryResponse> summaries = entries.getContent().stream()
+                .map(entry -> hydrated.getOrDefault(entry.getId(), entry))
                 .map(entry -> toSummary(entry, decisionsByPaymentId.get(entry.getExternalId())))
                 .toList();
 
@@ -102,7 +94,6 @@ public class PaymentDecisionController {
         return ResponseEntity.ok(toSummary(entry, decision));
     }
 
-    /** An analyst's action — see class javadoc for why this accepts both roles. */
     @PostMapping("/{paymentId}/review")
     @PreAuthorize("hasAnyRole('ANALYST', 'SUPERVISOR')")
     @Transactional
@@ -112,7 +103,6 @@ public class PaymentDecisionController {
         return ResponseEntity.ok().build();
     }
 
-    /** A supervisor's action. {@code @PreAuthorize} is the enforcement point — see class javadoc. */
     @PostMapping("/{paymentId}/clear")
     @PreAuthorize("hasRole('SUPERVISOR')")
     @Transactional
@@ -121,7 +111,6 @@ public class PaymentDecisionController {
         return ResponseEntity.ok().build();
     }
 
-    /** A supervisor's action. {@code @PreAuthorize} is the enforcement point — see class javadoc. */
     @PostMapping("/{paymentId}/escalate")
     @PreAuthorize("hasRole('SUPERVISOR')")
     @Transactional
@@ -130,13 +119,6 @@ public class PaymentDecisionController {
         return ResponseEntity.ok().build();
     }
 
-    /**
-     * Debtor/creditor and amount are read off the ledger postings directly
-     * (the debit leg is the debtor, the credit leg the creditor — see
-     * PostingEntity's sign convention) rather than re-deriving them some other
-     * way, so this view can never disagree with what the ledger actually
-     * recorded.
-     */
     private PaymentSummaryResponse toSummary(JournalEntryEntity entry, PaymentDecisionEntity decision) {
         List<PostingEntity> postings = entry.getPostings();
         PostingEntity debit = postings.stream().filter(PostingEntity::isDebit).findFirst()
@@ -175,12 +157,6 @@ public class PaymentDecisionController {
                     .map(f -> new TopFeatureResponse(f.feature(), f.value(), f.shapContribution()))
                     .toList();
         } catch (Exception malformed) {
-            // The raw payload is kept verbatim for audit (see
-            // PaymentDecisionEntity's javadoc) and this endpoint's job is to
-            // serve a view, not to re-validate what was already durably
-            // written - a payload that somehow fails to parse here degrades
-            // to an empty feature list rather than a 500 for the whole
-            // payment's summary.
             return List.of();
         }
     }

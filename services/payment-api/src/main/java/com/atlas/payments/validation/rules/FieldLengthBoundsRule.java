@@ -9,45 +9,9 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 
-/**
- * R10 — bound the fields that no other rule bounds.
- *
- * <h2>What this rule is NOT</h2>
- *
- * <p>Writing this rule surfaced that it mostly has nothing to do. Every other
- * field is already length-constrained as a side effect of its own format rule:
- * R03 pins currency to a three-character allow-list, R04 caps {@code endToEndId}
- * at 35, R05's BIC pattern admits only 8 or 11 characters, R07 admits four
- * literal values, R09 admits two. Re-checking those here would mean two rules
- * can reject the same input with different reason codes, and the caller cannot
- * tell which contract actually governs the field.
- *
- * <p>So this rule owns exactly what is left: the two free-form account
- * identifiers, plus a total-size backstop. If you later add a free-text field —
- * remittance information is the obvious one — it belongs here.
- *
- * <h2>The thing this rule genuinely cannot do</h2>
- *
- * <p>It cannot protect you from a large request body. By the time it runs,
- * Jackson has already read and materialised the payload; a 40MB body has
- * already been parsed into memory. Request-size limiting belongs upstream, at
- * the container: {@code server.max-http-request-header-size} for headers and
- * {@code server.tomcat.max-swallow-size} plus a filter for bodies. The
- * {@code MAX_TOTAL_CHARACTERS} check below is defence in depth against an
- * oversized-but-parsed payload, not a substitute for that. Say so plainly in the
- * README — a "field lengths bounded" row implies a protection this does not give.
- *
- * <h2>Decisions made here</h2>
- *
- * <p><b>Account max 34</b>, from ISO 13616's maximum IBAN length. Accounts are
- * not constrained to IBANs here, so this is a bound rather than a format claim.
- */
 public final class FieldLengthBoundsRule implements ValidationRule {
-
-    /** ISO 13616 maximum IBAN length. */
     public static final int MAX_ACCOUNT_LENGTH = 34;
 
-    /** Backstop across all string fields combined. Not a request-size limit — see class javadoc. */
     public static final int MAX_TOTAL_CHARACTERS = 512;
 
     @Override

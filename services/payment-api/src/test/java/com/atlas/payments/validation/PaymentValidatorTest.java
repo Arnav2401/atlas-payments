@@ -16,14 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Orchestration behaviour, which no individual rule test covers.
- *
- * <p>Built from a hand-assembled rule list rather than the Spring context, so
- * these assertions are about the validator's algorithm and not about wiring.
- */
 class PaymentValidatorTest {
-
     private final PaymentValidator validator = new PaymentValidator(List.of(
             new AmountPositiveRule(),       // structural
             new CurrencySupportedRule(),    // structural
@@ -46,12 +39,6 @@ class PaymentValidatorTest {
                 rejected.reasons().stream().map(RejectionReason::ruleId).toList());
     }
 
-    /**
-     * The two-phase design exists for exactly this. JPY 100.50 violates R02, but
-     * the currency is also unsupported — so R02 must not run at all, or the
-     * caller gets a decimal-places complaint about a currency we just told them
-     * we do not accept.
-     */
     @Test
     void skips_semantic_rules_when_a_structural_rule_failed() {
         var request = PaymentInstructionRequests.valid()
@@ -78,7 +65,6 @@ class PaymentValidatorTest {
                 rejected.reasons().stream().map(RejectionReason::ruleId).toList());
     }
 
-    /** Deterministic order, or response assertions become flaky. */
     @Test
     void reports_reasons_in_rule_registration_order() {
         var reversed = new PaymentValidator(List.of(

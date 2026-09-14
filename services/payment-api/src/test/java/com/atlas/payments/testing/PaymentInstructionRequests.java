@@ -5,21 +5,7 @@ import com.atlas.payments.api.dto.PaymentInstructionRequest;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 
-/**
- * Test fixture: a request that satisfies every rule, with one field overridden.
- *
- * <p>Without this, each rule test constructs a ten-argument record and the one
- * field under test is invisible among nine irrelevant ones. Here the test reads
- * as "a valid request, except the amount is negative", which is what the test
- * actually means.
- *
- * <p>The defaults are fixed values, not {@code LocalDate.now()}-relative ones,
- * so no test is time-dependent by accident. R08 is about the clock and should
- * override {@code settlementDate} explicitly and inject a fixed {@link
- * java.time.Clock} — that is the rule's whole subject matter.
- */
 public final class PaymentInstructionRequests {
-
     private PaymentInstructionRequests() {}
 
     public static Builder valid() {

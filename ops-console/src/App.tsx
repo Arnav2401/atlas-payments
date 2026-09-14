@@ -32,9 +32,6 @@ function LoginForm({ onLogin }: { onLogin: (session: Session) => void }) {
       const { accessToken } = await login(username, password);
       onLogin({ token: accessToken, username, role: roleFromToken(accessToken) });
     } catch {
-      // Matches the API's own constant-shape failure handling (see
-      // AuthController) - this UI doesn't distinguish "wrong password" from
-      // "unknown user" either.
       setError("Invalid username or password.");
     } finally {
       setSubmitting(false);
@@ -97,8 +94,6 @@ function PaymentDetail({
   actionPending: boolean;
 }) {
   const canReview = payment.reviewStatus === "NONE" || payment.reviewStatus === "UNDER_REVIEW";
-  // Gated on payment state only, deliberately not on role - see the comment
-  // on the buttons below.
   const canResolve = payment.reviewStatus === "UNDER_REVIEW";
 
   return (
@@ -162,9 +157,8 @@ function PaymentDetail({
             Request review
           </button>
         )}
-        {/* Both buttons render for any authenticated role - the point of this demo
-            is the server-side 403 an ANALYST token gets back, visible in the
-            error banner below, not a UI that pre-hides what the API would refuse. */}
+        {/* Enabled for both roles on purpose: an analyst clicking these should see
+            the server's 403, not a button that was never clickable. */}
         <button
           disabled={actionPending || !canResolve}
           onClick={() => onAction("clear")}
@@ -299,10 +293,6 @@ function Console({ session, onLogout }: { session: Session; onLogout: () => void
       const updated = await getPayment(session.token, selected.paymentId);
       setPayments((prev) => prev.map((p) => (p.paymentId === updated.paymentId ? updated : p)));
     } catch (e) {
-      // A 403 here is the interesting case: it means the button was clickable
-      // (both are, on purpose - see PaymentDetail) but the server's own
-      // @PreAuthorize refused it. That's the authorization boundary this
-      // console exists to demonstrate, not a bug to hide.
       setBanner(
         e instanceof ApiRequestError
           ? e.status === 403

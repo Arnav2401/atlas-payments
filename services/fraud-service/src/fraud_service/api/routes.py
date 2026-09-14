@@ -23,10 +23,6 @@ def health() -> dict[str, str]:
 
 @router.get("/rings", response_model=RingsResponse)
 def rings(request: Request, top_k: int = 15) -> RingsResponse:
-    """M6 (optional): the ops console's ring-visualisation data source. See
-    rings.py's module docstring for why this reads properties GDS already
-    wrote rather than running Louvain/degree centrality per request.
-    """
     driver = request.app.state.neo4j_driver
     if driver is None:
         return RingsResponse(enabled=False, candidates=[])

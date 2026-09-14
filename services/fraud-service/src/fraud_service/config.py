@@ -8,15 +8,8 @@ from dataclasses import dataclass
 class Settings:
     redis_url: str = os.environ.get("FRAUD_REDIS_URL", "redis://localhost:6379/0")
     model_dir: str = os.environ.get("FRAUD_MODEL_DIR", "models")
-    # Unset by default, not defaulted to "localhost:9092" — the M3 synchronous
-    # /score endpoint must keep working with no Kafka running at all, and a
-    # silently-wrong default bootstrap address would fail confusingly instead
-    # of the async path simply not starting. See main.py's lifespan.
     kafka_bootstrap_servers: str | None = os.environ.get("ATLAS_KAFKA_BOOTSTRAP_SERVERS")
 
-    # M6 (optional): same "unset means not running" shape as Kafka above,
-    # for the same reason — GET /rings must degrade to "graph features not
-    # enabled" rather than fail service startup when Neo4j isn't up.
     neo4j_uri: str | None = os.environ.get("ATLAS_NEO4J_URI")
     neo4j_user: str = os.environ.get("ATLAS_NEO4J_USER", "neo4j")
     neo4j_password: str = os.environ.get("ATLAS_NEO4J_PASSWORD", "atlas-demo-password")

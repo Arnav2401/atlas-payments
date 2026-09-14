@@ -1,16 +1,3 @@
-"""The one implementation of "score a payment", shared by the synchronous
-HTTP path (api/routes.py, M3) and the asynchronous Kafka path
-(kafka/consumer.py, M4).
-
-This file exists because the two call sites would otherwise duplicate the
-feature-timing, scoring, and record-after-score sequence — and a duplicated
-sequence is exactly how the two paths would eventually disagree about
-something as easy to get wrong twice as "record before or after scoring"
-(see FeatureEngineer's own docstring for why that ordering is not cosmetic).
-One implementation, two callers, is the same shape as feature_spec.py sharing
-names between training and serving.
-"""
-
 from __future__ import annotations
 
 import logging
@@ -38,10 +25,6 @@ class ScoringService:
         self._predictor = predictor
 
     def score(self, event: PaymentEvent, correlation_id: str) -> ScoringResult:
-        # Timed and logged separately from whatever transport wraps this call
-        # (HTTP request, Kafka message) — the 20ms budget is specifically
-        # feature computation, the Redis round trips, not model inference or
-        # anything transport-level around it.
         feature_start = time.perf_counter()
         features = self._engineer.compute(event)
         feature_latency_ms = (time.perf_counter() - feature_start) * 1000
@@ -49,8 +32,6 @@ class ScoringService:
 
         result = self._predictor.score(features)
 
-        # Record AFTER scoring, not before — see engineering.py's module
-        # docstring: a payment must never see itself in its own velocity count.
         self._engineer.record(event)
 
         return ScoringResult(

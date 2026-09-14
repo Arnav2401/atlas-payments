@@ -9,9 +9,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R09 — debtor country must be ISO 3166-1 alpha-2. */
 class DebtorCountryRuleTest {
-
     private final DebtorCountryRule rule = new DebtorCountryRule();
 
     @ParameterizedTest
@@ -29,10 +27,6 @@ class DebtorCountryRuleTest {
         assertEquals(RuleId.R09_DEBTOR_COUNTRY, rule.check(request).orElseThrow().ruleId());
     }
 
-    /**
-     * Edge: UK is the common abbreviation for the United Kingdom and is not an
-     * ISO 3166-1 alpha-2 code. GB is. This is the mistake a caller actually makes.
-     */
     @Test
     void edge_uk_is_rejected_and_gb_is_accepted() {
         assertTrue(rule.check(PaymentInstructionRequests.valid().debtorCountry("UK").build()).isPresent(),
@@ -40,7 +34,6 @@ class DebtorCountryRuleTest {
         assertTrue(rule.check(PaymentInstructionRequests.valid().debtorCountry("GB").build()).isEmpty());
     }
 
-    /** Edge: same normalisation answer as R03 and R07. */
     @ParameterizedTest
     @ValueSource(strings = {"in", "De", "gB"})
     void edge_case_variants_are_rejected_not_normalised(String country) {

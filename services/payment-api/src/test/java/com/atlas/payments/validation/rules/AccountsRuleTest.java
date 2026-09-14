@@ -9,9 +9,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R06 — accounts present and distinct. */
 class AccountsRuleTest {
-
     private static final String ACCOUNT = "DE89370400440532013000";
 
     private final AccountsRule rule = new AccountsRule();
@@ -31,11 +29,6 @@ class AccountsRuleTest {
         assertEquals(RuleId.R06_ACCOUNTS_PRESENT_AND_DISTINCT, reason.ruleId());
     }
 
-    /**
-     * Edge, and the substance of the rule: a self-payment must not slip through
-     * on a case or whitespace difference. Comparison normalises; the stored value
-     * is not rewritten.
-     */
     @ParameterizedTest
     @ValueSource(strings = {"de89370400440532013000", "  DE89370400440532013000  ", "De89370400440532013000"})
     void edge_self_payment_is_caught_despite_case_or_whitespace(String disguised) {

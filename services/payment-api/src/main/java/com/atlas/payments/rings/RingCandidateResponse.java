@@ -1,6 +1,5 @@
 package com.atlas.payments.rings;
 
-/** This API's own camelCase contract with the ops console — see {@link RingsApiDto}. */
 public record RingCandidateResponse(
         String accountId,
         int community,

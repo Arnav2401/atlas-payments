@@ -22,19 +22,10 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * Proves the metric actually appears at the actual scrape endpoint after a
- * real request through the real filter chain — not that a counter object was
- * incremented in isolation, which would not catch a wiring mistake (a wrong
- * metric name, a controller that never got the {@link PaymentMetrics} bean
- * injected, {@code /actuator/prometheus} accidentally requiring auth) that a
- * unit test of {@code PaymentMetrics} alone could not see.
- */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @TestPropertySource(properties = "atlas.security.jwt-secret=" + TestSecurity.JWT_SECRET)
 @Testcontainers
 class ObservabilityTest {
-
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> POSTGRES = new PostgreSQLContainer<>("postgres:18");
@@ -52,10 +43,6 @@ class ObservabilityTest {
 
     @Test
     void a_rejected_payment_increments_the_decision_outcome_counter() {
-        // A payment guaranteed to fail R01 (amount must be positive) — the
-        // simplest way to produce a REJECTED_VALIDATION outcome without
-        // needing a funded account or a valid bearer token for /payments
-        // itself, which is a separate concern from this test.
         String body = """
                 {"endToEndId":"OBS-TEST","instructedAmount":-1,"instructedCurrency":"USD",
                  "debtorAgent":"DEUTDEFF","creditorAgent":"CHASUS33XXX",
@@ -66,10 +53,6 @@ class ObservabilityTest {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("Idempotency-Key", "obs-test-" + System.nanoTime());
-        // /payments requires authentication (anyRequest().authenticated() in
-        // SecurityConfig) - any valid token works here, since submission
-        // itself is not role-gated (see PaymentController's DECISION 2 area
-        // and SecurityConfig's javadoc for what IS role-gated and why).
         var tokenResponse = rest.postForEntity(
                 "http://localhost:" + port + "/auth/token",
                 Map.of("username", "analyst1", "password", "analyst-demo-password"),

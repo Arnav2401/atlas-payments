@@ -15,22 +15,8 @@ import java.time.Clock;
 import java.time.Instant;
 import java.util.UUID;
 
-/**
- * The transactional core: writes one journal entry, its postings, and the
- * idempotency record in a single database transaction.
- *
- * <p>Separated from {@link LedgerPaymentStore} for a concrete reason rather than
- * tidiness. When the unique constraint on the idempotency key fires, the
- * PostgreSQL transaction is aborted and no further statement can run inside it —
- * so the losing thread cannot re-read the winner's result in the same
- * transaction. The retry has to happen in a new one. Spring's proxies do not
- * intercept self-invocation, so calling a {@code @Transactional} method from the
- * same class would silently run without starting one. Two beans, two
- * transactions, no surprises.
- */
 @Component
 public class LedgerWriter {
-
     private final AccountRepository accounts;
     private final AccountProvisioner accountProvisioner;
     private final JournalEntryRepository journalEntries;
@@ -55,49 +41,6 @@ public class LedgerWriter {
         this.clock = clock;
     }
 
-    /**
-     * <h2>Isolation level: READ COMMITTED (the PostgreSQL default), deliberately</h2>
-     *
-     * <p>The usual reason to reach for REPEATABLE READ or SERIALIZABLE is a
-     * read-modify-write cycle: read a balance, decide on it, write it back. This
-     * ledger has no such cycle. Postings are append-only and a balance is derived
-     * by summing them, so there is no value read here whose staleness could
-     * produce a wrong write. The anomaly that higher isolation buys protection
-     * from is not reachable, because the pattern that creates it is absent.
-     *
-     * <p>The one invariant that genuinely needs protecting — exactly one ledger
-     * effect per idempotency key — is protected by a unique constraint, which the
-     * database enforces regardless of isolation level and regardless of how many
-     * application instances are running. Raising the isolation level would add
-     * serialisation failures and retry logic while protecting nothing extra.
-     *
-     * <h2>Except for the funds check, which is a read-modify-write</h2>
-     *
-     * <p>The available-funds check below reads a balance and decides on it, which
-     * is exactly the pattern READ COMMITTED does not protect: two concurrent
-     * payments could each read a sufficient balance and both commit, overdrawing
-     * the account. That is a lost update and it is reachable here.
-     *
-     * <p>Rather than raise the isolation level for the whole transaction, the
-     * account is read with {@code OPTIMISTIC_FORCE_INCREMENT}, which narrows the
-     * protection to the one row whose staleness matters. The second payment to
-     * commit fails on the version check and is reported as a conflict.
-     *
-     * <p><b>Why optimistic and not {@code SELECT FOR UPDATE}.</b> Pessimistic
-     * locking serialises every payment on an account whether or not there is
-     * contention, and holds the lock for the whole transaction. Optimistic pays
-     * nothing when conflicts are rare — which is the truth for a retail account —
-     * and pays a retry when they are not. The calculus inverts for a heavily used
-     * corporate or treasury account, where conflicts are the norm and a retry
-     * storm is worse than waiting; that is the case for {@code SELECT FOR UPDATE}
-     * on those accounts specifically.
-     *
-     * <p>The conflict is <b>not retried here</b>. It surfaces as a 409, which is
-     * safe advice precisely because the operation is idempotent under the key:
-     * the caller can resubmit with the same Idempotency-Key and either win the
-     * race or be told their payment already exists. A server-side retry with
-     * backoff is the obvious refinement and belongs with M5's resilience work.
-     */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public LedgerWriteResult write(PaymentInstruction instruction, String idempotencyKey) {
         String currencyCode = instruction.instructedCurrency().getCurrencyCode();
@@ -105,18 +48,13 @@ public class LedgerWriter {
         long amountMinor = Money.toMinorUnits(
                 instruction.instructedAmount(), instruction.instructedCurrency());
 
-        // Only the debtor is read-and-decided-upon (the funds check below), so
-        // only the debtor needs the forced version increment. See the javadoc
-        // on resolveAccount for why locking the creditor too would be pure cost.
+        // Only the debtor is locked: its balance is read and decided on below, so
+        // it needs the version bump. The creditor is only ever written to.
         AccountEntity debtor = resolveAccount(instruction.debtorAccount(), currencyCode, true);
         AccountEntity creditor = resolveAccount(instruction.creditorAccount(), currencyCode, false);
 
-        // Captured once, before either posting is added, and handed back to
-        // the caller: this is the balance state fraud scoring needs to see —
-        // the state the payment was decided against, not the state after it
-        // landed. Computed regardless of account type (assertSufficientFunds
-        // only CHECKS it conditionally) so a fraud assessment is always
-        // possible even when the funds check itself does not apply.
+        // Read once and handed back, so the funds check and fraud scoring both see
+        // the balance as it was before this payment landed.
         long debtorBalanceBeforeMinor = accounts.availableMinorUnits(debtor.getAccountNumber());
         long creditorBalanceBeforeMinor = accounts.availableMinorUnits(creditor.getAccountNumber());
 
@@ -127,8 +65,8 @@ public class LedgerWriter {
         JournalEntryEntity entry = new JournalEntryEntity(
                 UUID.randomUUID(), instruction.endToEndId(), "customer credit transfer", now);
 
-        // Positive is a debit, negative a credit. These two legs sum to zero,
-        // which the deferred constraint trigger verifies at COMMIT.
+        // Positive is a debit, negative a credit. The two legs sum to zero, which
+        // the deferred constraint trigger checks at COMMIT.
         entry.addPosting(debtor, amountMinor, currencyCode);
         entry.addPosting(creditor, -amountMinor, currencyCode);
 
@@ -142,24 +80,6 @@ public class LedgerWriter {
         return new LedgerWriteResult(submission, debtorBalanceBeforeMinor, creditorBalanceBeforeMinor);
     }
 
-    /**
-     * The dual-write problem, and the entire fix for it, in one method.
-     *
-     * <p>The problem: commit the payment to Postgres, then publish to Kafka as
-     * a second, independent operation, and a crash between the two leaves a
-     * payment in the ledger that nothing downstream — fraud scoring,
-     * anything — ever saw. Money moved and nobody screened it.
-     *
-     * <p>The fix is that this method does not talk to Kafka at all. It writes
-     * a row to the {@code outbox} table, in this same {@code REQUIRES_NEW}
-     * transaction, which means the event's existence is exactly as durable as
-     * the journal entry it describes — one commit, not two operations with a
-     * gap between them. {@link com.atlas.payments.outbox.OutboxPoller} is the
-     * separate, asynchronous process that actually reaches Kafka, on its own
-     * schedule, reading rows this method has already made durable. Atomicity
-     * where it is needed (this write); asynchrony where it is wanted (the
-     * publish).
-     */
     private void writeOutboxEvent(JournalEntryEntity entry, PaymentInstruction instruction, String currencyCode,
                                   long debtorBalanceBeforeMinor, long creditorBalanceBeforeMinor, Instant now) {
         var currency = instruction.instructedCurrency();
@@ -167,7 +87,7 @@ public class LedgerWriter {
                 entry.getExternalId().toString(),
                 instruction.endToEndId(),
                 instruction.instructedAmount(),
-                false, // see FraudAssessmentRequest#isCashOut's javadoc for this scoping limitation
+                false, // always false: this API only models credit transfers, never cash-out
                 instruction.debtorAccount(),
                 instruction.creditorAccount(),
                 Money.fromMinorUnits(debtorBalanceBeforeMinor, currency),
@@ -178,31 +98,12 @@ public class LedgerWriter {
         try {
             payload = objectMapper.writeValueAsString(event);
         } catch (JsonProcessingException impossible) {
-            // A record of primitives, a BigDecimal and a String cannot fail to
-            // serialise. If this ever throws, it means the event shape grew a
-            // field Jackson genuinely cannot handle, which is a bug to fix, not
-            // a runtime condition to recover from - hence unchecked, not a
-            // caught-and-logged path that would silently drop the event.
             throw new IllegalStateException("PaymentSubmittedEvent must always be serialisable", impossible);
         }
 
         outbox.save(new OutboxEntity(entry.getExternalId(), PaymentSubmittedEvent.TOPIC, payload, now));
     }
 
-    /**
-     * The funds check. Takes the already-read balance rather than reading it
-     * again, so the value this check decides against is exactly the value
-     * {@link #write} hands back for fraud scoring — one read, two consumers,
-     * rather than two reads that could in principle disagree.
-     *
-     * <p>SETTLEMENT accounts are exempt: they are the bank's own position and are
-     * expected to run negative. Applying a customer overdraft rule to a nostro
-     * account would block every funding entry.
-     *
-     * <p>Note the sign. A customer deposit is a liability of the bank, so a
-     * funded customer account carries a credit — negative — balance, and what
-     * they can spend is the negation of it.
-     */
     private void assertSufficientFunds(AccountEntity debtor, long availableMinorUnits, long amountMinor) {
         if (debtor.getAccountType() == AccountType.SETTLEMENT) {
             return;
@@ -222,59 +123,12 @@ public class LedgerWriter {
         return RequestFingerprint.of(instruction);
     }
 
-    /**
-     * Get-or-create, in two steps that must not be collapsed back into one.
-     *
-     * <p><b>Provisioning is a separate step because of a second concurrency
-     * hazard this class used to have.</b> Two different first-time payments to
-     * the same new counterparty — nothing to do with idempotency — used to race
-     * on {@code findByAccountNumber} finding nothing for both, and the second
-     * insert failed the unique constraint from inside this transaction, which
-     * aborted the whole payment. {@link AccountProvisioner#createIfAbsent} fixes
-     * that the same way the idempotency key is handled: attempt the insert in
-     * its own transaction, and treat a conflict caught here as "it exists now"
-     * rather than as a fault. By the time control reaches {@code findForUpdate}
-     * below, the row is guaranteed to exist — created by this call or by
-     * whichever concurrent call won.
-     *
-     * <p>The second step reads the now-guaranteed-to-exist row, and is where a
-     * second decision lives: whether that read forces a version increment.
-     *
-     * <h2>Why the creditor is deliberately read without the lock</h2>
-     *
-     * <p>The forced increment exists to protect the funds check — it is what
-     * makes "read a balance, decide on it" safe under concurrency. The creditor
-     * is never read-and-decided-upon here; it is only written to, unconditionally.
-     * Locking it anyway would add contention that protects nothing: a payroll run
-     * crediting a thousand small payments to one popular merchant account would
-     * serialise entirely on a version check that guards an invariant the code
-     * never actually needs about the creditor side. This was found by a test —
-     * eight concurrent first-time payments to one new shared creditor failed with
-     * optimistic-lock exceptions before this distinction was made explicit.
-     *
-     * <p>If a future feature reads a creditor's balance and decides something
-     * from it — a holding-limit or AML threshold check, say — that account
-     * becomes read-and-decided-upon too, and {@code requiresLock} must flip to
-     * {@code true} for it. Until then, forcing it costs correctness for nothing.
-     *
-     * <p><b>Known compromise, and a real one, separate from the concurrency
-     * question.</b> A bank does not open an account because a stranger sent
-     * money to it — an unknown account is a rejection, and onboarding is a
-     * separate, regulated process. Auto-creating here keeps the demo and the
-     * 10,000-payment reconciliation run self-contained. The production shape is
-     * a validation rule that rejects an unknown creditor account plus an
-     * onboarding path, and the README must not describe this as if that already
-     * exists.
-     */
     private AccountEntity resolveAccount(String accountNumber, String currencyCode, boolean requiresLock) {
         try {
             accountProvisioner.createIfAbsent(accountNumber, currencyCode, AccountType.CUSTOMER, Instant.now(clock));
         } catch (DataIntegrityViolationException lostTheRace) {
-            // Another transaction created this account first, between our check
-            // and our insert. Fine - the postcondition is the row exists, and it
-            // does. AccountProvisioner is a genuinely different bean, so this
-            // catch is outside the REQUIRES_NEW transaction that failed; this
-            // method's own transaction (write()'s) is untouched by it.
+            // A concurrent payment created the account first. The postcondition is
+            // that the row exists, and it does.
         }
 
         var lookup = requiresLock ? accounts.findForUpdate(accountNumber) : accounts.findByAccountNumber(accountNumber);

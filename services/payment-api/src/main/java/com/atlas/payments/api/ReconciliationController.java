@@ -8,21 +8,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-/**
- * {@code GET /ledger/reconciliation}.
- *
- * <p>Returns 200 when the ledger balances and <b>500 when it does not</b>. That
- * is deliberate: an unbalanced ledger is not a client error and not a normal
- * outcome to be reported politely — it means money has been created or
- * destroyed, and the endpoint should read as broken to every monitor watching
- * it. This is the one place in the service where a non-2xx is the point.
- *
- * <p>M5 will need this as a scraped health signal, not just a manual curl.
- */
 @RestController
 @RequestMapping("/ledger")
 public class ReconciliationController {
-
     private final ReconciliationService reconciliation;
 
     public ReconciliationController(ReconciliationService reconciliation) {

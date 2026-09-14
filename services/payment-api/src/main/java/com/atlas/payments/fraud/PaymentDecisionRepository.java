@@ -8,13 +8,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 public interface PaymentDecisionRepository extends JpaRepository<PaymentDecisionEntity, Long> {
-
     Optional<PaymentDecisionEntity> findByPaymentId(UUID paymentId);
 
-    /**
-     * For the ops console's list view: one query for every decision on a page
-     * of payments, rather than N+1 queries as the list is assembled — see
-     * PaymentDecisionController.
-     */
     List<PaymentDecisionEntity> findAllByPaymentIdIn(Collection<UUID> paymentIds);
 }

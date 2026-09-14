@@ -327,14 +327,23 @@ not yet configured.
 ## API
 
 ```bash
-curl -X POST localhost:8080/payments \
+TOKEN=$(curl -s -X POST localhost:8080/auth/token \
   -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: demo-1' \
+  -d '{"username":"analyst1","password":"analyst-demo-password"}' | jq -r .accessToken)
+
+curl -X POST localhost:8080/payments \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -H "Idempotency-Key: $(uuidgen)" \
   -d '{"endToEndId":"E2E-001","instructedAmount":100.00,"instructedCurrency":"USD",
        "debtorAgent":"DEUTDEFF","creditorAgent":"CHASUS33XXX",
        "debtorAccount":"DE89370400440532013000","creditorAccount":"GB29NWBK60161331926819",
-       "debtorCountry":"DE","chargeBearer":"SHAR","settlementDate":"2026-09-21"}'
+       "debtorCountry":"DE","chargeBearer":"SHAR","settlementDate":"'"$(date -u +%F)"'"}'
 ```
+
+Settlement date must be today or later (R08), hence the substitution. A debtor
+account with no funds comes back `REJECTED` with `ATLAS-L001` — fund it first
+via `POST /ops/funding` with a supervisor token.
 
 `{"endToEndId":"E2E-001","status":"ACCEPTED","paymentId":"44cf3931-..."}`
 

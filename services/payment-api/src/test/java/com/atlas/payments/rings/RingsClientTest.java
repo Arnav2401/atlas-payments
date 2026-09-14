@@ -21,14 +21,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * The M6-optional analogue of {@code FraudClientResilienceTest}, minus the
- * circuit breaker — see {@link RingsClient}'s own javadoc for why one call
- * loading the ops console's "Fraud rings" tab doesn't need one. The claim
- * here is narrower and just as real: fraud-service down (or Neo4j down
- * behind it, which looks identical from here) must degrade GET /rings to
- * {@code enabled=false}, not a 500 that breaks the ops console's whole tab.
- */
 @SpringBootTest(
         classes = {RingsClient.class, RingsClientConfig.class},
         webEnvironment = SpringBootTest.WebEnvironment.NONE)
@@ -38,7 +30,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
         FlywayAutoConfiguration.class
 })
 class RingsClientTest {
-
     private static WireMockServer wireMock;
 
     @DynamicPropertySource

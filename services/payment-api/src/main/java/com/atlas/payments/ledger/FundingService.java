@@ -10,25 +10,8 @@ import java.time.Instant;
 import java.util.Currency;
 import java.util.UUID;
 
-/**
- * Puts money into a customer account, against the bank's settlement position.
- *
- * <p>Exists because an available-funds check is meaningless if no account can
- * ever hold anything. A funding entry is an ordinary balanced journal entry: it
- * debits the settlement account and credits the customer, so the ledger stays
- * balanced and reconciliation still proves it.
- *
- * <p><b>This is an operations affordance, not a product feature.</b> In a real
- * system money enters through a settlement rail — an incoming wire, a card
- * capture, a cash deposit — each with its own reconciliation against an external
- * statement. Nothing here is authenticated yet either; M5's RBAC must put this
- * behind the supervisor role, because as it stands it creates money from the
- * bank's own position on request.
- */
 @Service
 public class FundingService {
-
-    /** One settlement account per currency; an entry may never mix currencies. */
     static final String SETTLEMENT_ACCOUNT_PREFIX = "ATLAS-SETTLEMENT-";
 
     private final AccountRepository accounts;
@@ -59,28 +42,17 @@ public class FundingService {
         JournalEntryEntity entry = new JournalEntryEntity(
                 UUID.randomUUID(), "FUNDING-" + UUID.randomUUID(), "account funding", now);
 
-        // Debit the bank's position, credit the customer. Credit is negative, so
-        // the customer's available funds (the negation) go up.
         entry.addPosting(settlement, amountMinor, currencyCode);
         entry.addPosting(customer, -amountMinor, currencyCode);
 
         journalEntries.save(entry);
     }
 
-    /**
-     * Same two-step shape as {@link LedgerWriter#resolveAccount}, for the same
-     * reason: provisioning and reading are separate calls, so that a concurrent
-     * creation race is resolved by {@link AccountProvisioner} rather than by
-     * whichever of two simultaneous funding calls happens to insert first. The
-     * catch here is what makes that true — see {@link AccountProvisioner}'s
-     * class javadoc for the version of this class that got it wrong.
-     */
     AccountEntity settlementAccount(String currencyCode, Instant now) {
         String number = SETTLEMENT_ACCOUNT_PREFIX + currencyCode;
         try {
             accountProvisioner.createIfAbsent(number, currencyCode, AccountType.SETTLEMENT, now);
         } catch (DataIntegrityViolationException lostTheRace) {
-            // Another funding call created it first. The row exists; proceed.
         }
         return accounts.findByAccountNumber(number).orElseThrow(() -> new IllegalStateException(
                 "settlement account " + number + " must exist after provisioning"));
@@ -90,7 +62,6 @@ public class FundingService {
         try {
             accountProvisioner.createIfAbsent(accountNumber, currencyCode, AccountType.CUSTOMER, now);
         } catch (DataIntegrityViolationException lostTheRace) {
-            // Another funding call created it first. The row exists; proceed.
         }
         AccountEntity existing = accounts.findByAccountNumber(accountNumber).orElseThrow(
                 () -> new IllegalStateException(

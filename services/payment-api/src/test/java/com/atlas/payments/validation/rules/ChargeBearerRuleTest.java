@@ -10,9 +10,7 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/** R07 — chargeBearer in the supported set. */
 class ChargeBearerRuleTest {
-
     private final ChargeBearerRule rule = new ChargeBearerRule();
 
     @ParameterizedTest
@@ -30,7 +28,6 @@ class ChargeBearerRuleTest {
         assertEquals(RuleId.R07_CHARGE_BEARER_SUPPORTED, rule.check(request).orElseThrow().ruleId());
     }
 
-    /** Edge: same normalisation answer as R03 — reject, do not uppercase. */
     @ParameterizedTest
     @ValueSource(strings = {"shar", "Shar", "sHaR"})
     void edge_case_variants_are_rejected_not_normalised(String chargeBearer) {
@@ -45,11 +42,6 @@ class ChargeBearerRuleTest {
         assertTrue(rule.check(PaymentInstructionRequests.valid().chargeBearer(" ").build()).isPresent());
     }
 
-    /**
-     * Pins the decision to reuse the domain enum rather than declare a second
-     * one here. If someone adds a constant to ChargeBearer, this rule accepts it
-     * automatically and this test says so out loud.
-     */
     @Test
     void the_supported_set_is_derived_from_the_domain_enum() {
         for (ChargeBearer value : ChargeBearer.values()) {

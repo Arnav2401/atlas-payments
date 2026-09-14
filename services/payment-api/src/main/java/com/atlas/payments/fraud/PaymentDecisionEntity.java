@@ -14,19 +14,9 @@ import org.hibernate.type.SqlTypes;
 import java.time.Instant;
 import java.util.UUID;
 
-/**
- * The durable, asynchronous record of a fraud verdict — distinct from M3's
- * synchronous {@code FraudAssessment}, which is never persisted and exists
- * only for the length of one HTTP response. This is the row
- * {@link PaymentDecisionConsumer} writes after consuming {@code
- * payments.decisioned}, and {@code payment_id}'s unique constraint is the
- * whole idempotency mechanism — see that class's javadoc for why at-least-once
- * delivery makes this constraint load-bearing rather than defensive.
- */
 @Entity
 @Table(name = "payment_decisions")
 public class PaymentDecisionEntity {
-
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
@@ -45,19 +35,10 @@ public class PaymentDecisionEntity {
     @Column(name = "decided_at", nullable = false)
     private Instant decidedAt;
 
-    /** The raw event, kept verbatim for audit — see OutboxEntity's payload for the same reasoning. */
     @Column(name = "raw_payload", nullable = false)
     @JdbcTypeCode(SqlTypes.JSON)
     private String rawPayload;
 
-    /**
-     * A flagged payment starts {@code UNDER_REVIEW} automatically — see the
-     * constructor — because a fraud model flagging a payment IS the request
-     * for review; an analyst does not need to separately ask for review on
-     * something the system already flagged. An unflagged payment starts
-     * {@code NONE}; {@code POST /payments/{id}/review} still lets an analyst
-     * pull an unflagged payment into review manually.
-     */
     @Enumerated(EnumType.STRING)
     @Column(name = "review_status", nullable = false, length = 16)
     private ReviewStatus reviewStatus;
@@ -104,15 +85,6 @@ public class PaymentDecisionEntity {
         return rawPayload;
     }
 
-    /**
-     * An analyst's action: pull this payment into review. Idempotent — moving
-     * an already-under-review payment to UNDER_REVIEW again is a no-op, not
-     * an error, since two analysts requesting review on the same payment is a
-     * normal race, not a conflict either of them needs to see.
-     *
-     * @throws IllegalStateException if the payment already has a supervisor's
-     *         terminal decision — review cannot un-resolve a resolved payment.
-     */
     public void requestReview() {
         if (reviewStatus == ReviewStatus.CLEARED || reviewStatus == ReviewStatus.ESCALATED) {
             throw new ReviewConflictException(
@@ -121,13 +93,11 @@ public class PaymentDecisionEntity {
         reviewStatus = ReviewStatus.UNDER_REVIEW;
     }
 
-    /** A supervisor's action: this payment was legitimate. */
     public void clear() {
         assertResolvable("clear");
         reviewStatus = ReviewStatus.CLEARED;
     }
 
-    /** A supervisor's action: this payment needs action outside this system. */
     public void escalate() {
         assertResolvable("escalate");
         reviewStatus = ReviewStatus.ESCALATED;
