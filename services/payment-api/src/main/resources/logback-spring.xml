@@ -31,10 +31,8 @@
         <appender-ref ref="JSON"/>
     </root>
 
-    <!-- Quieter than INFO for framework internals - the connection-retry
-         noise from Kafka clients when the broker briefly isn't reachable
-         (see PaymentAuthorizationTest's javadoc) would otherwise dominate
-         every log stream at the level this project's own log lines use. -->
+    <!-- Kafka's connection-retry noise when a broker is briefly unreachable
+         would otherwise drown out this project's own log lines. -->
     <logger name="org.apache.kafka" level="WARN"/>
     <logger name="org.hibernate" level="WARN"/>
 </configuration>

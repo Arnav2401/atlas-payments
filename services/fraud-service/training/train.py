@@ -22,6 +22,13 @@ GLOBAL_SHAP_SAMPLE_SIZE = 5_000
 
 
 def precision_at_recall(y_true: np.ndarray, y_score: np.ndarray, recall_target: float) -> float:
+    """Precision at the highest threshold still hitting recall_target.
+
+    Reported instead of accuracy because the data is 99.7% legitimate: a model
+    that predicts "not fraud" every time scores 99.7% accurate and catches no
+    fraud. This says what that cannot - at the recall a fraud team would run at,
+    how many flagged payments are real.
+    """
     precision, recall, _ = precision_recall_curve(y_true, y_score)
     eligible = recall >= recall_target
     if not eligible.any():

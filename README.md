@@ -9,11 +9,25 @@ rules, commits them to a double-entry ledger, publishes them asynchronously via
 a transactional outbox, scores each one for fraud with an explainable model, and
 exposes the whole thing behind authentication with metrics and load-test numbers.
 
-**Status:** M5 complete, M6 (optional) built and measured — JWT auth with role-based access control, a React + TypeScript ops console, Prometheus + Grafana observability, the full stack packaged as one `docker compose up`, a k6 load test with real regenerable numbers, a CI secret scanner, and a Neo4j counterparty graph (Louvain + centrality) that detects 6/6 planted fraud rings but measured a small PR-AUC *regression* when fed back into the M3 model — reported honestly rather than left out. On top of M1-M4's payment API, double-entry ledger, transactional outbox, KRaft-mode Kafka pipeline, and explainable fraud model. 158 Java tests, 18 Python tests passing.
+**Status:** complete through M5, with the optional M6 built and measured.
+158 Java tests and 18 Python tests passing.
+
+| Module | What it covers |
+|---|---|
+| M1 | Payment API, ten validation rules |
+| M2 | Double-entry ledger, idempotency, optimistic locking |
+| M3 | XGBoost + SHAP fraud scoring, circuit breaker with a rule fallback |
+| M4 | Transactional outbox, Kafka in KRaft mode, DLQ |
+| M5 | JWT auth and RBAC, ops console, Prometheus + Grafana, Docker Compose, k6, secret scanning |
+| M6 | Neo4j counterparty graph, Louvain + centrality (optional) |
+
+M6 finds 6 of 6 planted fraud rings, but adding its graph features to the M3
+model measured a small PR-AUC *regression*. That number is reported as
+measured rather than left out; see [Fraud rings](#fraud-rings--the-counterparty-graph-m6-optional).
 
 ## A note on ISO 20022
 
-The JSON payload uses ISO-20022-*flavoured* field names — `debtorAgent`,
+The JSON payload uses ISO-20022-*flavoured* field names: `debtorAgent`,
 `creditorAgent`, `endToEndId`, `instructedAmount`, `instructedCurrency`,
 `chargeBearer`.
 
@@ -92,20 +106,27 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Brings up all nine services — Postgres, Redis, KRaft-mode Kafka,
+Brings up all nine services: Postgres, Redis, KRaft-mode Kafka,
 fraud-service, payment-api, the ops console, Prometheus, Grafana, and Neo4j
-(M6, optional) — with the payment API on `:8080`, the ops console on
-`:3002`, Prometheus on `:9090`, Grafana on `:3001` (`admin` / `atlas-demo`,
-or browse anonymously — read-only, no login needed), and Neo4j's own browser
-UI on `:7474`. This needs `services/fraud-service/models/model.json` to
-already exist (see training, below) — `docker compose up fraud-service`
-fails fast at startup rather than serving with no model if that step was
-skipped. Neo4j comes up empty; see [Fraud rings](#fraud-rings--the-counterparty-graph-m6-optional)
-below for loading the graph.
+(optional, M6).
 
-`ATLAS_JWT_SECRET` has no default anywhere in the app — see [Security, observability, and packaging](#security-observability-and-packaging-m5)
-— so `.env` (gitignored; `.env.example` documents the shape) must set a real
-one before `payment-api` will start. Get a token and try it:
+| Service | URL |
+|---|---|
+| Payment API | http://localhost:8080 |
+| Ops console | http://localhost:3002 |
+| Grafana | http://localhost:3001 (`admin` / `atlas-demo`, or browse anonymously) |
+| Prometheus | http://localhost:9090 |
+| Neo4j browser | http://localhost:7474 |
+
+This needs `services/fraud-service/models/model.json` to already exist (see
+training, below). Without it `fraud-service` fails fast at startup rather
+than serving with no model. Neo4j comes up empty; see
+[Fraud rings](#fraud-rings--the-counterparty-graph-m6-optional) for loading
+the graph.
+
+`ATLAS_JWT_SECRET` has no default anywhere in the app, so `.env` (gitignored;
+`.env.example` documents the shape) must set a real one before `payment-api`
+will start. Get a token and try it:
 
 ```bash
 curl -X POST localhost:8080/auth/token -H 'Content-Type: application/json' \
@@ -123,7 +144,7 @@ Flyway applies the schema at startup. `ddl-auto` is `validate`, so a drift
 between the JPA entities and the migrations fails at boot rather than silently
 diverging — it has already caught one real mismatch (`CHAR(3)` vs `VARCHAR(3)`).
 
-The fraud service needs a trained model before it can start at all — the
+The fraud service needs a trained model before it can start at all, and the
 raw dataset it trains from is not distributed with this repo:
 
 ```bash
@@ -153,14 +174,13 @@ npm run dev   # localhost:5173, proxies nowhere - it talks to VITE_API_BASE_URL 
 ```
 
 Sign in as `analyst1` or `supervisor1` (same demo passwords as above). Try
-clearing or escalating a flagged payment as `analyst1` — the buttons are not
-hidden by role (see the comment in `ops-console/src/App.tsx`'s
-`PaymentDetail`), so this is a real 403 from `@PreAuthorize` on the server,
-not a client-side illusion of access control.
+clearing or escalating a flagged payment as `analyst1`: the buttons are not
+hidden by role, so what comes back is a real 403 from `@PreAuthorize` on the
+server, not a client-side illusion of access control.
 
 ## The ledger
 
-Three tables — `accounts`, `journal_entries`, `postings` — and **no balance
+Three tables (`accounts`, `journal_entries`, `postings`) and **no balance
 column anywhere**. A balance is `SUM(postings.amount_minor)` for an account.
 Storing a running balance is simpler and faster and is exactly what makes a
 ledger wrong under concurrency, because it turns every payment into a
@@ -324,6 +344,21 @@ JSON. That path is separate and reports differently. *(TBD: document it here.)*
 been parsed into memory. Request-size limiting belongs at the container, and is
 not yet configured.
 
+**One class per rule, not a chain of `if`s.** Each rule is a `ValidationRule`
+with an id, a phase and one `check`, so a rule can be unit-tested against its
+own inputs, reordered, or switched off without touching the others — and the
+reason code it emits is owned by the class that decides it. A chain couples
+every rule to the one before it and makes "which rule rejected this, and why"
+a matter of reading control flow. The cost is more files; the benefit is that
+`RuleId` is an enum a reviewer can enumerate, and `docs/validation-spec.md`
+maps one-to-one onto it.
+
+**Versioning them** is the open question, and the honest answer is that the
+thresholds are still constants in the rule classes. R08's window and R10's
+bounds belong in `application.yaml` (there is a `TODO` on it) so a rule change
+is config, not a recompile — with the rule id and version stamped on the
+rejection so a decision stays explainable after the rule moves on.
+
 ## API
 
 ```bash
@@ -371,6 +406,16 @@ every payment after it posts to the ledger. `payment-api` calls it over HTTP
 behind a Resilience4j circuit breaker; killing the fraud service leaves
 payments processing on a conservative rule fallback — proven live below, not
 just asserted.
+
+**Gradient boosting, not a neural network.** The data is tabular, mixed-type
+and about 2.7M rows — the regime where boosted trees are the stronger baseline
+and a net has nothing to exploit: no spatial or sequential structure to learn,
+and far less data than one needs to beat trees on tabular features. Two
+practical reasons decide it beyond accuracy: `TreeExplainer` gives *exact*
+SHAP values for a tree ensemble rather than the sampled approximation a net
+requires, and the brief's own bar is a reviewable per-payment explanation;
+and XGBoost handles NaN natively as a split direction, which matters because
+`orig_prior_txn_count_24h` is genuinely missing for almost every row.
 
 ### Data and what it forced the design to confront
 
@@ -455,9 +500,9 @@ payment (95% of balance) -> FALLBACK_RULES, flagged
 ```
 
 A flagged payment is still `ACCEPTED` with the assessment attached, not
-auto-rejected — see DECISION 3 in `PaymentController`'s javadoc for why:
-auto-rejecting on a probabilistic score needs a review workflow (M5's
-ops-console decision action) that does not exist yet.
+auto-rejected: auto-rejecting on a probabilistic score needs a review
+workflow behind it (who clears a false positive, and how), and until that
+exists a false positive would be unrecoverable rather than inconvenient.
 
 **Known scoping limitation, stated plainly:** every payment sent to the model
 has `isCashOut=false` — atlas-payments has no cash-withdrawal concept, so it
@@ -478,6 +523,15 @@ entry's durability, because they are the same commit. `OutboxPoller` is a
 separate, `@Scheduled` process that reads undispatched rows, publishes to
 Kafka, and marks them dispatched — atomicity where it is needed, asynchrony
 where it is wanted.
+
+**Why a broker rather than the HTTP call the API already makes.** The
+synchronous call to `/score` still exists and still scores the payment inline.
+The broker buys the things that call cannot: the decision survives the fraud
+service being down (the row waits in the outbox instead of being lost), a
+second consumer can be added without the payment path knowing, and a poison
+message can be parked on a DLQ and replayed. A direct HTTP publish would put
+the payment path's durability at the mercy of another service's uptime — which
+is the dual-write problem again, one layer out.
 
 ```
 POST /payments → ledger write + outbox row (one transaction)
@@ -734,8 +788,7 @@ uv run python -m training.train_graph_uplift --data /path/to/paysim.csv   # ~5 m
 accounts each, all funnelling into one mule account within a coordinated
 few-hour window) — planted rather than found, because PaySim's own fraud
 mechanism is a single-hop drain-and-cash-out pattern with no naturally
-occurring, *labelled* multi-account ring to detect (see
-`graph/plant_rings.py`'s module docstring). `graph/detect_rings.py` then
+occurring, *labelled* multi-account ring to detect. `graph/detect_rings.py` then
 ranks every account by `in_degree / (temporal_spread_hours + 1)` — high
 fan-in concentrated into a short window.
 
@@ -764,8 +817,9 @@ RING0-MULE   community 2377029   in-degree  8   spread 5h   score 1.33   PLANTED
 ```
 
 The ops console's "Fraud rings" tab (`GET /rings`, proxied through
-payment-api so the browser never talks to fraud-service or Neo4j directly —
-see `RingsController`'s javadoc) renders this same ranking live, with a
+payment-api, so the browser never talks to fraud-service or Neo4j directly
+and the view answers to the same auth boundary as everything else) renders
+this same ranking live, with a
 `PLANTED` badge on the six accounts that are ground truth rather than a real
 finding.
 
@@ -785,7 +839,7 @@ actually does.
 `training/train_graph_uplift.py` joins three account-level graph features
 (`dest_graph_in_degree`, `dest_pagerank`, `dest_community_size` — computed
 from the training-period graph only, the same causality boundary M3's own
-velocity features enforce; see `graph/build_graph.py`'s module docstring)
+velocity features enforce)
 onto the M3 feature set and re-derives the baseline in the same run, so the
 comparison is apples-to-apples rather than a diff against a possibly-stale
 committed number:
@@ -849,6 +903,15 @@ for the scenario (20 VUs ramped over 70s against a pool of 20 pre-funded debtor
 accounts, one per VU, so no two VUs contend for the same account row) and
 [Connection pool sizing](#connection-pool-sizing-found-by-running-the-load-test-not-by-guessing)
 below for a real capacity bug this test found on its first real run.
+
+**Why p50/p95/p99 and not a mean.** Latency here is a long right tail, not a
+bell curve — a GC pause, a cold connection, a slow SHAP call — and a mean
+averages exactly the requests that hurt into exactly the ones that don't. On
+the first load test the mean was 529ms while the median was 42ms: the mean
+described no actual request, and both numbers were dominated by 1% of calls
+timing out at 30s. Percentiles are also what an SLO can be written against —
+"99% under a second" is a commitment you can breach detectably, where "mean
+under a second" can hold while a tenth of users are timing out.
 
 ## Documentation
 
